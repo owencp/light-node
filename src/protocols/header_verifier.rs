@@ -1,5 +1,5 @@
 use ckb_chain_spec::consensus::Consensus;
-use ckb_types::{core::HeaderView, packed::Byte32};
+use ckb_types::{core::HeaderView, packed::Byte32,U256};
 
 pub trait HeaderProvider {
     fn get_header(&self, hash: Byte32) -> Option<HeaderView>;
@@ -24,7 +24,7 @@ impl<'a, T: HeaderProvider> HeaderVerifier<'a, T> {
         self.verify_version(header)
             .and(self.verify_pow(header))
             .and(self.verify_number(header))
-            .and(self.verify_timestamp(header))
+            .and(self.verify_difficulty(header))
     }
 
     fn verify_version(&self, header: &HeaderView) -> Result<(), HeaderVerificationError> {
@@ -56,29 +56,30 @@ impl<'a, T: HeaderProvider> HeaderVerifier<'a, T> {
         }
     }
 
-    fn verify_timestamp(&self, header: &HeaderView) -> Result<(), HeaderVerificationError> {
-        let median_time_block_count = self.consensus.median_time_block_count();
-        let mut timestamps = Vec::with_capacity(median_time_block_count);
-        let mut parent_hash = header.parent_hash();
-        for _ in 0..median_time_block_count {
-            match self.header_provider.get_header(parent_hash) {
-                Some(parent) => {
-                    timestamps.push(parent.timestamp());
-                    parent_hash = parent.parent_hash();
-                }
-                None => {
-                    break;
+    fn verify_difficulty(&self, header: &HeaderView) -> Result<(), HeaderVerificationError> {
+        match self.header_provider.get_header(header.parent_hash()) {
+            Some(parent) => {
+                if parent.epoch().number() == header.epoch().number() {
+                    if parent.difficulty() == header.difficulty() {
+                        Ok(())
+                    } else {
+                        Err(HeaderVerificationError::Difficulty)
+                    }
+                } else {
+                    // we are using dampening factor τ = 2 in CKB, the difficulty adjust range will be [previous / (τ * τ) .. previous * (τ * τ)]
+                    if header.difficulty() >= parent.difficulty() / U256::from(4u64)
+                        && header.difficulty() <= parent.difficulty() * U256::from(4u64)
+                    {
+                        Ok(())
+                    } else {
+                        Err(HeaderVerificationError::Difficulty)
+                    }
                 }
             }
-        }
-        timestamps.sort();
-        let median_time = timestamps[timestamps.len() >> 1];
-        if header.timestamp() > median_time {
-            Ok(())
-        } else {
-            Err(HeaderVerificationError::Timestamp)
+            None => Err(HeaderVerificationError::UnknownParent),
         }
     }
+
 }
 
 #[derive(Debug)]
@@ -86,7 +87,7 @@ pub enum HeaderVerificationError {
     Version,
     Pow,
     Number,
-    Timestamp,
+    Difficulty,
     UnknownParent,
 }
 
@@ -98,7 +99,7 @@ impl std::fmt::Display for HeaderVerificationError {
             HeaderVerificationError::Version => write!(f, "invalid version"),
             HeaderVerificationError::Pow => write!(f, "invalid nonce"),
             HeaderVerificationError::Number => write!(f, "invalid block number"),
-            HeaderVerificationError::Timestamp => write!(f, "invalid block timestamp"),
+            HeaderVerificationError::Difficulty => write!(f, "invalid block difficulty"),
             HeaderVerificationError::UnknownParent => write!(f, "cannot find parent block"),
         }
     }

@@ -1,7 +1,7 @@
 use crate::protocols::HeaderProvider;
 use crate::store::{Batch, Error, IteratorDirection, Store};
 use ckb_types::{
-    core::{BlockNumber, HeaderView},
+    core::{BlockNumber, HeaderView, BlockView},
     packed,
     prelude::*,
     utilities::compact_to_difficulty,
@@ -15,11 +15,9 @@ pub enum Key {
     Header(packed::Byte32),
     OutPoint(packed::OutPoint),
     ConsumedOutPoint(packed::OutPoint),
+    FilteredBlock(BlockNumber, packed::Byte32),
+    Script(packed::Script),
     GcsFilter(packed::Byte32),
-    FilterHash(
-        packed::Byte32, // last_block_hash
-        packed::Byte32  // the parent hash os start block
-    ),
 }
 
 #[repr(u8)]
@@ -28,8 +26,9 @@ pub enum KeyPrefix {
     Header = 192,
     OutPoint = 160,
     ConsumedOutPoint = 128,
-    GcsFilter = 96,
-    FilterHash = 64,
+    FilteredBlock = 96,
+    Script = 64,
+    GcsFilter = 32,
 }
 
 pub type IOIndex = u32;
@@ -48,11 +47,10 @@ pub enum Value {
         packed::Byte32, // Consumed by which tx hash
         BlockNumber,    // Consumed by which block number
     ),
+    FilteredBlock(Vec<(packed::Byte32, IOIndex, IOType)>),
+    Script(BlockNumber),
     GcsFilter(
         packed::Bytes,  // filter
-    ),
-    FilterHash(
-        packed::Byte32Vec, // filter hashes
     ),
 }
 
@@ -83,14 +81,18 @@ impl Into<Vec<u8>> for Key {
                 encoded.push(KeyPrefix::ConsumedOutPoint as u8);
                 encoded.extend_from_slice(out_point.as_slice());
             }
+            Key::FilteredBlock(block_number, block_hash) => {
+                encoded.push(KeyPrefix::FilteredBlock as u8);
+                encoded.extend_from_slice(&block_number.to_be_bytes());
+                encoded.extend_from_slice(block_hash.as_slice());
+            }
+            Key::Script(script) => {
+                encoded.push(KeyPrefix::Script as u8);
+                encoded.extend_from_slice(script.as_slice());
+            }
             Key::GcsFilter(block_hash) => {
                 encoded.push(KeyPrefix::GcsFilter as u8);
                 encoded.extend_from_slice(block_hash.as_slice());
-            }
-            Key::FilterHash(parent_hash, stop_hash) => {
-                encoded.push(KeyPrefix::FilterHash as u8);
-                encoded.extend_from_slice(parent_hash.as_slice());
-                encoded.extend_from_slice(stop_hash.as_slice());
             }
         }
         encoded
@@ -126,13 +128,23 @@ impl Into<Vec<u8>> for Value {
                 encoded.extend_from_slice(consumed_by_tx_hash.as_slice());
                 encoded.extend_from_slice(&consumed_by_block_number.to_be_bytes());
             }
+            Value::FilteredBlock(ios) => {
+                for (tx_hash, io_index, io_type) in ios {
+                    encoded.extend_from_slice(tx_hash.as_slice());
+                    encoded.extend_from_slice(&io_index.to_be_bytes());
+                    match io_type {
+                        IOType::Input => encoded.push(0),
+                        IOType::Output => encoded.push(1),
+                    }
+                }
+            }
+            Value::Script(block_number) => {
+                encoded.extend_from_slice(&block_number.to_be_bytes());
+            }
             Value::GcsFilter(
                 filter
             ) => {
                 encoded.extend_from_slice(filter.as_slice());
-            }
-            Value::FilterHash(filterhashes) => {
-                encoded.extend_from_slice(filterhashes.as_slice());
             }
         }
         encoded
@@ -220,7 +232,6 @@ impl<S: Store> ChainStore<S> {
     //Gcs filter
     pub fn insert_gcsfilter(&self, filter: packed::GcsFilter)->Result<(), Error> {
         let mut batch = self.store.batch()?;
-        //TODO:: more actions ??
         batch.put_kv(
             Key::Gcsfilter(filter.block_hash()),
             Value::Gcsfilter(filter.filter()),
@@ -228,24 +239,51 @@ impl<S: Store> ChainStore<S> {
         batch.commit()
     }
     
-    pub fn get_gcsfilter(&self, block_hash: packed::Byte32)->Result<Option<packed::Bytes>, Error> {
-        
+    //get filter by block_hash
+    pub fn get_gcsfilter(&self, block_hash: packed::Byte32) -> Result<Option<packed::Bytes>, Error> {
+        self.store
+            .get(&Key::GcsFilter(block_hash).into_vec())
+            .map(|value| {
+                value.map(|filter| packed::BytesReader::from_slice_should_be_ok(&filter[..]).to_entity())
+            })
     }
-    //Gcs filters hashes
-    pub fn insert_filter_hashes(&self, hashes:packed::GcsFilterHashes)->Result<(), Error> {
-        //TODO::
-        let mut batch = self.store.batch()?;
-        batch.put_kv(
-            Key::FilterHash(hashes.parent_hash(), hashes.stop_hash()),
-            Value::FilterHash(hashes.filter_hashes),
-        )?;
-        
-        batch.commit()
+    
+    pub fn get_lastest_hash(&self)->Result<Option<packed::Byte32>, Error>{
+        let mut iter = self
+            .store
+            .iter(
+                &[KeyPrefix::GcsFilter as u8 + 1],
+                IteratorDirection::Reverse,
+            )?
+            .take_while(|(key, _value)| key.starts_with(&[KeyPrefix::GcsFilter as u8]));
+
+        if let Some(tip_hash) = iter.next().map(|(_key, value)| {
+            packed::Byte32Reader::from_slice_should_be_ok(&_key[..]).to_entity()
+        }) {
+            Ok(tip_hash)
+        } else {
+            Ok(None)
+        }
     }
-    //gcs checkpoint
-    pub fn insert_gcs_checkpoints(&self, gcs_ck:packed::GcsFilterCheckPoint)->Result<(), Error> {
-        //TODO::
-    }
+    
+    //get the lastest filter block number
+    pub fn get_lastest_block_num(&slef) -> Result<Option<BlockNumber>, Error>{
+        let mut iter = self
+            .store
+            .iter(
+                &[KeyPrefix::Script as u8 + 1],
+                IteratorDirection::Reverse,
+            )?
+            .take_while(|(key, _value)| key.starts_with(&[KeyPrefix::Script as u8]));
+
+        if let Some(block_number) = iter.next().map(|(_key, value)| {
+            packed::Uint64Reader::from_slice_should_be_ok(&value[..]).unpack()
+        }) {
+            Ok(block_number)
+        } else {
+            Ok(0 as BlockNumber)
+        }
+    } 
     pub fn insert_header(&self, header: HeaderView) -> Result<(), Error> {
         let mut batch = self.store.batch()?;
         let parent_total_difficulty = self
@@ -321,89 +359,57 @@ impl<S: Store> ChainStore<S> {
         Ok(locator)
     }
 
-    pub fn insert_filtered_blocks(
+    pub fn insert_filtered_block(
         &self,
-        filtered_blocks: packed::FilteredBlocks,
+        block: BlockView
     ) -> Result<(), Error> {
-        let scripts = self
-            .get_scripts()?
-            .into_iter()
-            .map(|(script, _block_number)| script)
-            .collect::<Vec<_>>();
         let mut batch = self.store.batch()?;
-        let mut last_number = 0;
-        for block_hash in filtered_blocks.unmatched_block_hashes() {
-            if let Some(header) = self.get_header(block_hash.clone())? {
-                batch.put_kv(
-                    Key::FilteredBlock(header.number(), block_hash),
-                    Value::FilteredBlock(Vec::new()),
-                )?;
-                last_number = header.number();
-            }
-        }
-        for (index, matched_block) in filtered_blocks.matched_blocks().into_iter().enumerate() {
-            let block_hash = filtered_blocks
-                .matched_block_hashes()
-                .get(index)
-                .expect("checked len");
-
-            if let Some(header) = self.get_header(block_hash.clone())? {
-                let mut matched = Vec::new();
-                for tx in matched_block.transactions() {
-                    for (index, input) in tx.raw().inputs().into_iter().enumerate() {
-                        if let Some((output, output_data, block_number)) =
-                            self.get_out_point(input.previous_output())?
-                        {
-                            if scripts.iter().any(|script| script == &output.lock()) {
-                                let tx_hash = input.previous_output().tx_hash();
-                                matched.push((tx_hash.clone(), index as u32, IOType::Input));
-                                batch.put_kv(
-                                    Key::ConsumedOutPoint(packed::OutPoint::new(
-                                        tx_hash,
-                                        index as u32,
-                                    )),
-                                    Value::ConsumedOutPoint(
-                                        output,
-                                        output_data,
-                                        block_number,
-                                        tx.calc_tx_hash(),
-                                        header.number(),
-                                    ),
-                                )?;
-                                batch.delete(Key::OutPoint(input.previous_output()).into_vec())?;
-                            }
-                        }
-                    }
-                    for (index, output) in tx.raw().outputs().into_iter().enumerate() {
+        let mut matched = Vec::new();
+        if let Some(filtered_txs) = block.transactions().to_opt() {
+            for tx in filtered_txs.transactions() {
+                for (index, input) in tx.raw().inputs().into_iter().enumerate() {
+                    if let Some((output, output_data, block_number)) =
+                        self.get_out_point(input.previous_output())?
+                    {
                         if scripts.iter().any(|script| script == &output.lock()) {
-                            let tx_hash = tx.calc_tx_hash();
-                            matched.push((tx_hash.clone(), index as u32, IOType::Output));
+                            let tx_hash = input.previous_output().tx_hash();
+                            matched.push((tx_hash.clone(), index as u32, IOType::Input));
                             batch.put_kv(
-                                Key::OutPoint(packed::OutPoint::new(tx_hash, index as u32)),
-                                Value::OutPoint(
+                                Key::ConsumedOutPoint(packed::OutPoint::new(tx_hash, index as u32)),
+                                Value::ConsumedOutPoint(
                                     output,
-                                    tx.raw().outputs_data().get(index).expect("checked len"),
-                                    header.number(),
+                                    output_data,
+                                    block_number,
+                                    tx.calc_tx_hash(),
+                                    block.header().raw().number().unpack(),
                                 ),
                             )?;
+                            batch.delete(Key::OutPoint(input.previous_output()).into_vec())?;
                         }
                     }
                 }
-                batch.put_kv(
-                    Key::FilteredBlock(header.number(), block_hash),
-                    Value::FilteredBlock(matched),
-                )?;
-                last_number = header.number();
+                for (index, output) in tx.raw().outputs().into_iter().enumerate() {
+                    if scripts.iter().any(|script| script == &output.lock()) {
+                        let tx_hash = tx.calc_tx_hash();
+                        matched.push((tx_hash.clone(), index as u32, IOType::Output));
+                        batch.put_kv(
+                            Key::OutPoint(packed::OutPoint::new(tx_hash, index as u32)),
+                            Value::OutPoint(
+                                output,
+                                tx.raw().outputs_data().get(index).expect("checked len"),
+                                block.header().raw().number().unpack(),
+                            ),
+                        )?;
+                    }
+                }
             }
-        }
+        };
 
-        if last_number > 0 {
-            for script in scripts {
-                batch.put_kv(Key::Script(script), Value::Script(last_number))?;
-            }
-        }
-
-        batch.commit()
+        batch.put_kv(
+            Key::FilteredBlock(block.number(), block.hash()),
+            Value::FilteredBlock(matched),
+        )?;
+        batch.commit()?;
     }
 
     fn get_out_point(
@@ -457,54 +463,6 @@ impl<S: Store> ChainStore<S> {
                     );
                     (output, output_data, created_by_block_number)
                 })
-            })
-    }
-
-    pub fn get_unfiltered_block_hashes(&self, limit: usize) -> Result<Vec<packed::Byte32>, Error> {
-        let mut start_number = self
-            .get_scripts()?
-            .iter()
-            .map(|(_script, block_number)| block_number)
-            .min()
-            .cloned()
-            .unwrap_or(0);
-        // check fork and find unfiltered block start number
-        {
-            let mut start_key = Vec::new();
-            start_key.push(KeyPrefix::FilteredBlock as u8);
-            start_key.extend_from_slice(&(start_number + 1).to_be_bytes());
-            let iter = self
-                .store
-                .iter(&start_key, IteratorDirection::Reverse)?
-                .take_while(|(key, _value)| key.starts_with(&[KeyPrefix::FilteredBlock as u8]));
-
-            for (key, _value) in iter {
-                let filtered_block_number =
-                    BlockNumber::from_be_bytes(key[1..9].try_into().expect("stored block number"));
-                let filtered_block_hash =
-                    packed::Byte32::from_slice(&key[9..]).expect("stored block hash");
-                if self.get_block_hash(filtered_block_number)? == Some(filtered_block_hash.clone())
-                {
-                    start_number = filtered_block_number + 1;
-                    break;
-                } else {
-                    self.rollback_filtered_block(filtered_block_number, filtered_block_hash)?;
-                }
-            }
-        }
-
-        self.store
-            .iter(
-                &Key::ActiveChain(start_number).into_vec(),
-                IteratorDirection::Forward,
-            )
-            .map(|iter| {
-                iter.take_while(|(key, _value)| key.starts_with(&[KeyPrefix::ActiveChain as u8]))
-                    .take(limit)
-                    .map(|(_key, value)| {
-                        packed::Byte32::from_slice(&value).expect("stored block hash")
-                    })
-                    .collect::<Vec<_>>()
             })
     }
 
@@ -582,6 +540,19 @@ impl<S: Store> ChainStore<S> {
                     })
                     .collect::<Vec<_>>()
             })
+    }
+    
+    pub fn update_scripts(&mut self, last_number: BlockNumber) -> Result<(), Error> {
+        let mut batch = self.store.batch()?;
+        let scripts = self
+            .get_scripts()?
+            .into_iter()
+            .map(|(script, _block_number)| script)
+            .collect::<Vec<_>>();
+        for script in scripts {
+            batch.put_kv(Key::Script(script), Value::Script(last_number))?;
+        }
+        batch.commit()
     }
 
     pub fn get_cells(

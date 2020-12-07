@@ -15,24 +15,24 @@ ctrlc = { version = "3.1", features = ["termination"] }
 rand = "0.6"
 clap = "2.33"
 bech32 = "0.6"
-
+golomb-coded-set = { git = "https://github.com/TheWaWaR/golomb-coded-set"}
 jsonrpc-core = "14.0"
 jsonrpc-derive = "14.0"
 jsonrpc-http-server = "14.0"
 jsonrpc-server-utils = "14.0"
 
 
-# ckb-app-config = { git = "https://github.com/owencp/ckb", branch = "quake/gcs-filter" }
-# ckb-logger-service = { git = "https://github.com/owencp/ckb", branch = "quake/gcs-filter" }
-ckb-network = { git = "https://github.com/owencp/ckb", branch = "quake/gcs-filter" }
-ckb-logger = { git = "https://github.com/owencp/ckb", branch = "quake/gcs-filter" }
-# ckb-logger-config = { git = "https://github.com/owencp/ckb", branch = "quake/gcs-filter" }
-ckb-types = { git = "https://github.com/owencp/ckb", branch = "quake/gcs-filter" }
-ckb-chain-spec = { git = "https://github.com/owencp/ckb", branch = "quake/gcs-filter" }
-ckb-resource = { git = "https://github.com/owencp/ckb", branch = "quake/gcs-filter" }
-ckb-jsonrpc-types = { git = "https://github.com/owencp/ckb", branch = "quake/gcs-filter" }
-ckb-crypto = { git = "https://github.com/owencp/ckb", branch = "quake/gcs-filter" }
-ckb-hash = { git = "https://github.com/owencp/ckb", branch = "quake/gcs-filter" }
+ckb-app-config = { git = "https://github.com/nervosnetwork/ckb", branch = "quake/gcs-filter" }
+ckb-logger-service = { git = "https://github.com/nervosnetwork/ckb", branch = "quake/bloom-filter" }
+ckb-network = { git = "https://github.com/nervosnetwork/ckb", branch = "quake/gcs-filter" }
+ckb-logger = { git = "https://github.com/nervosnetwork/ckb", branch = "quake/gcs-filter" }
+ckb-logger-config = { git = "https://github.com/nervosnetwork/ckb", branch = "quake/bloom-filter" }
+ckb-types = { git = "https://github.com/nervosnetwork/ckb", branch = "quake/gcs-filter" }
+ckb-chain-spec = { git = "https://github.com/nervosnetwork/ckb", branch = "quake/gcs-filter" }
+ckb-resource = { git = "https://github.com/nervosnetwork/ckb", branch = "quake/gcs-filter" }
+ckb-jsonrpc-types = { git = "https://github.com/nervosnetwork/ckb", branch = "quake/gcs-filter" }
+ckb-crypto = { git = "https://github.com/nervosnetwork/ckb", branch = "quake/gcs-filter" }
+ckb-hash = { git = "https://github.com/nervosnetwork/ckb", branch = "quake/gcs-filter" }
 
 
 [dev-dependencies]

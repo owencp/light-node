@@ -1,5 +1,5 @@
 use ckb_app_config::NetworkConfig;
-use gcs_filter::protocols::{ChainStore, FilterProtocol, SyncProtocol};
+use gcs_filter::protocols::{ChainStore, FilterProtocol, SyncProtocol,Peers};
 use gcs_filter::service::RpcService;
 use gcs_filter::store::{SledStore, Store};
 use ckb_logger::info;
@@ -13,6 +13,7 @@ use crossbeam_channel::unbounded;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
+
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Config {
@@ -94,6 +95,8 @@ fn init(
     let consensus = spec.build_consensus().expect("build consensus");
 
     let (sender, receiver) = unbounded();
+    
+    let  peers = Peers::new();
 
     let _server = RpcService::new(
         store.clone(),
@@ -123,6 +126,9 @@ fn init(
     blocking_recv_flag.disable_connected();
     blocking_recv_flag.disable_disconnected();
     blocking_recv_flag.disable_notify();
+    
+    let sync_protocol = Box::new(SyncProtocol::new(store.clone(), consensus.clone(), peers.clone()));
+    let filter_protocol = Box::new(FilterProtocol::new(store, consensus.clone(), receiver, peers.clone()));
 
     let protocols = vec![
         CKBProtocol::new(
@@ -134,6 +140,7 @@ fn init(
             Arc::clone(&network_state),
             blocking_recv_flag,
         ),
+        /*
         CKBProtocol::new(
             "rel".to_string(),
             NetworkProtocol::RELAY.into(),
@@ -143,6 +150,7 @@ fn init(
             Arc::clone(&network_state),
             blocking_recv_flag,
         ),
+        */
         CKBProtocol::new(
             "gcs".to_string(),
             NetworkProtocol::GCSFILTER.into(),
