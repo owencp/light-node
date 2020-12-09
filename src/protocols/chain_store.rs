@@ -156,7 +156,7 @@ pub struct ChainStore<S> {
     pub store: Arc<S>,
 }
 
-impl<S> ChainStore<S> where S:Store {
+impl<S: Store> ChainStore<S> {
     pub fn tip(&self) -> Result<Option<HeaderView>, Error> {
         let mut iter = self
             .store
@@ -526,6 +526,16 @@ impl<S> ChainStore<S> where S:Store {
         batch.commit()
     }
     */
+    
+    pub fn insert_script(
+        &self,
+        script: packed::Script,
+        block_number: BlockNumber,
+    ) -> Result<(), Error> {
+        let mut batch = self.store.batch()?;
+        batch.put_kv(Key::Script(script), Value::Script(block_number))?;
+        batch.commit()
+    }
     pub fn get_scripts(&self) -> Result<Vec<(packed::Script, BlockNumber)>, Error> {
         self.store
             .iter(&[KeyPrefix::Script as u8], IteratorDirection::Forward)

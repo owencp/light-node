@@ -340,7 +340,7 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for SyncProtocol<S> {
                 for block_number in (start_block_num..=stop_block_num).take(MAX_HEADERS_LEN) {
                     let block_hash = self.store.get_block_hash(block_number.clone())?.expect("stored block hash");
                     let filter = self.store.get_gcsfilter(block_hash.clone())?.expect("stored gcs filter");
-                    let mut input = Cursor::new(filter);
+                    let mut input = Cursor::new(filter.unpack());
                     if true == self.filter_reader
                         .match_any(&mut input, &mut scripts.iter().map(|script| script.as_slice()))
                         .unwrap(){
