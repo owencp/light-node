@@ -156,7 +156,7 @@ pub struct ChainStore<S> {
     pub store: Arc<S>,
 }
 
-impl<S: Store> ChainStore<S> {
+impl<S> ChainStore<S> where S:Store {
     pub fn tip(&self) -> Result<Option<HeaderView>, Error> {
         let mut iter = self
             .store
@@ -233,8 +233,8 @@ impl<S: Store> ChainStore<S> {
     pub fn insert_gcsfilter(&self, filter: packed::GcsFilter)->Result<(), Error> {
         let mut batch = self.store.batch()?;
         batch.put_kv(
-            Key::Gcsfilter(filter.block_hash()),
-            Value::Gcsfilter(filter.filter()),
+            Key::GcsFilter(filter.block_hash()),
+            Value::GcsFilter(filter.filter()),
         )?;
         batch.commit()
     }
@@ -260,14 +260,14 @@ impl<S: Store> ChainStore<S> {
         if let Some(tip_hash) = iter.next().map(|(_key, value)| {
             packed::Byte32Reader::from_slice_should_be_ok(&_key[..]).to_entity()
         }) {
-            Ok(tip_hash)
+            Ok(Some(tip_hash))
         } else {
             Ok(None)
         }
     }
     
     //get the lastest filter block number
-    pub fn get_lastest_block_num(&slef) -> Result<Option<BlockNumber>, Error>{
+    pub fn get_lastest_block_num(&self)->Result<Option<BlockNumber>, Error>{
         let mut iter = self
             .store
             .iter(
@@ -279,9 +279,9 @@ impl<S: Store> ChainStore<S> {
         if let Some(block_number) = iter.next().map(|(_key, value)| {
             packed::Uint64Reader::from_slice_should_be_ok(&value[..]).unpack()
         }) {
-            Ok(block_number)
+            Ok(Some(block_number))
         } else {
-            Ok(0 as BlockNumber)
+            Ok(Some(0 as BlockNumber))
         }
     } 
     pub fn insert_header(&self, header: HeaderView) -> Result<(), Error> {
@@ -363,53 +363,56 @@ impl<S: Store> ChainStore<S> {
         &self,
         block: BlockView
     ) -> Result<(), Error> {
+        let scripts = self
+            .get_scripts()?
+            .into_iter()
+            .map(|(script, _block_number)| script)
+            .collect::<Vec<_>>();
         let mut batch = self.store.batch()?;
         let mut matched = Vec::new();
-        if let Some(filtered_txs) = block.transactions().to_opt() {
-            for tx in filtered_txs.transactions() {
-                for (index, input) in tx.raw().inputs().into_iter().enumerate() {
-                    if let Some((output, output_data, block_number)) =
-                        self.get_out_point(input.previous_output())?
-                    {
-                        if scripts.iter().any(|script| script == &output.lock()) {
-                            let tx_hash = input.previous_output().tx_hash();
-                            matched.push((tx_hash.clone(), index as u32, IOType::Input));
-                            batch.put_kv(
-                                Key::ConsumedOutPoint(packed::OutPoint::new(tx_hash, index as u32)),
-                                Value::ConsumedOutPoint(
-                                    output,
-                                    output_data,
-                                    block_number,
-                                    tx.calc_tx_hash(),
-                                    block.header().raw().number().unpack(),
-                                ),
-                            )?;
-                            batch.delete(Key::OutPoint(input.previous_output()).into_vec())?;
-                        }
-                    }
-                }
-                for (index, output) in tx.raw().outputs().into_iter().enumerate() {
+        for (_,tx) in block.transactions().into_iter().enumerate() {
+            for (index, input) in tx.inputs().into_iter().enumerate() {
+                if let Some((output, output_data, block_number)) =
+                    self.get_out_point(input.previous_output())?
+                {
                     if scripts.iter().any(|script| script == &output.lock()) {
-                        let tx_hash = tx.calc_tx_hash();
-                        matched.push((tx_hash.clone(), index as u32, IOType::Output));
+                        let tx_hash = input.previous_output().tx_hash();
+                        matched.push((tx_hash.clone(), index as u32, IOType::Input));
                         batch.put_kv(
-                            Key::OutPoint(packed::OutPoint::new(tx_hash, index as u32)),
-                            Value::OutPoint(
+                            Key::ConsumedOutPoint(packed::OutPoint::new(tx_hash, index as u32)),
+                            Value::ConsumedOutPoint(
                                 output,
-                                tx.raw().outputs_data().get(index).expect("checked len"),
-                                block.header().raw().number().unpack(),
+                                output_data,
+                                block_number,
+                                tx.hash(),
+                                block.number(),
                             ),
                         )?;
+                        batch.delete(Key::OutPoint(input.previous_output()).into_vec())?;
                     }
                 }
             }
-        };
+            for (index, output) in tx.outputs().into_iter().enumerate() {
+                if scripts.iter().any(|script| script == &output.lock()) {
+                    let tx_hash = tx.hash();
+                    matched.push((tx_hash.clone(), index as u32, IOType::Output));
+                    batch.put_kv(
+                        Key::OutPoint(packed::OutPoint::new(tx_hash, index as u32)),
+                        Value::OutPoint(
+                            output,
+                            tx.outputs_data().get(index).expect("checked len"),
+                            block.number(),
+                        ),
+                    )?;
+                }
+            }
+        }
 
         batch.put_kv(
             Key::FilteredBlock(block.number(), block.hash()),
             Value::FilteredBlock(matched),
         )?;
-        batch.commit()?;
+        batch.commit()
     }
 
     fn get_out_point(
@@ -465,7 +468,7 @@ impl<S: Store> ChainStore<S> {
                 })
             })
     }
-
+    /*
     fn rollback_filtered_block(
         &self,
         block_number: BlockNumber,
@@ -522,7 +525,7 @@ impl<S: Store> ChainStore<S> {
 
         batch.commit()
     }
-
+    */
     pub fn get_scripts(&self) -> Result<Vec<(packed::Script, BlockNumber)>, Error> {
         self.store
             .iter(&[KeyPrefix::Script as u8], IteratorDirection::Forward)

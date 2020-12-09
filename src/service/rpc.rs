@@ -147,16 +147,6 @@ const DEFAULT_FEE_RATE: usize = 1;
 
 #[rpc(server)]
 pub trait Rpc {
-    //是否需要暴露这些RPC，只留后台处理？？
-    #[rpc(name = "get_gcs_filters")]
-    fn get_gcs_filters(&self, start_block: Uint64, stop_hash:byte32) -> Result<Vec<packed::GcsFilter>>;
-
-    #[rpc(name = "get_gcs_filter_hashes")]
-    fn get_gcs_filter_hashes(&self, start_block: Uint64, stop_hash:byte32) -> Result<packed::GcsFilterHashes>;
-
-    #[rpc(name = "get_gcs_filter_checkpoint")]
-    fn get_gcs_filter_checkpoint(&self, stop_hash: Byte32, interval:Uint32) -> Result<packed::GcsFilterCheckPoint>;
-
     #[rpc(name = "get_cells")]
     fn get_cells(&self, script: Script) -> Result<Vec<Cell>>;
     
@@ -200,18 +190,6 @@ impl<S> RpcImpl<S> {
 }
 
 impl<S: Store + Send + Sync + 'static> Rpc for RpcImpl<S> {
-    fn get_gcs_filters(&self, start_block: Uint64, stop_hash:Byte32)-> Result<Vec<packed::GcsFilter>> {
-        self.send_control_message(ControlMessage::GetGcsFilters(start_block.into(), stop_hash.into()))
-    }
-    
-    fn get_gcs_filter_hashes(&self, start_block: Uint64, stop_hash:byte32) -> Result<packed::GcsFilterHashes> {
-        self.send_control_message(ControlMessage::GetGcsFilterHashes(start_block.into(), stop_hash.into()))
-    }
-
-    fn get_gcs_filter_checkpoint(&self, stop_hash: Byte32, interval:Uint32) -> Result<packed::GcsFilterCheckPoint> {
-        self.send_control_message(ControlMessage::GetGcsFilterCheckPoint(stop_hash.into(), interval.into()))
-    }
-
     fn get_cells(&self, script: Script) -> Result<Vec<Cell>> {
         self.chain_store
             .get_cells(&script.into())

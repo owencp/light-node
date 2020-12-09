@@ -1,16 +1,15 @@
 use super::{ChainStore, HeaderProviderWrapper, HeaderVerifier,Peers};
 use crate::store::Store;
-use crate::{types::SyncShared, BAD_MESSAGE_BAN_TIME};
 use ckb_chain_spec::consensus::Consensus;
 use ckb_logger::{debug, info};
 use ckb_network::{bytes::Bytes, CKBProtocolContext, CKBProtocolHandler, PeerIndex};
 use ckb_types::{core::{BlockNumber, HeaderView},packed, prelude::*};
-use crossbeam_channel::Receiver;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use crossbeam_channel::{unbounded,Sender,Receiver};
 use ckb_hash::blake2b_256;
+use ckb_util::RwLock;
 
 const BAD_MESSAGE_BAN_TIME: Duration = Duration::from_secs(5 * 60);
 const GCS_FILTER_MSG_TOKEN: u64 = 0;
@@ -32,8 +31,8 @@ impl CheckPoints {
     pub fn new(cps:packed::GcsFilterCheckPoint, flag:bool) -> Self {
         Self{
             flag,
-            stop_hash:cps.stop_hash,
-            check_points:Box::new(cps.filter_hashes),
+            stop_hash:cps.stop_hash(),
+            check_points:Box::new(cps.filter_hashes()),
         }
     }
 }
@@ -43,7 +42,6 @@ pub struct FilterProtocol<S> {
     store: ChainStore<S>,
     consensus: Consensus,
     control_receiver: Receiver<ControlMessage>,
-    //pending_get_filtered_blocks: Arc<RwLock<HashSet<packed::Byte32>>>,
     peers: Peers,
     filter_hashes: Arc<RwLock<HashMap<PeerIndex, packed::GcsFilterHashes>>>,
     check_points: Arc<RwLock<HashMap<PeerIndex,CheckPoints>>>,
@@ -63,10 +61,9 @@ impl<S> FilterProtocol<S> {
             store,
             consensus,
             control_receiver,
-            //pending_get_filtered_blocks: Arc::new(HashMap::new()),
             peers,
-            filter_hashes: Arc::new(HashMap::new()),
-            check_points: Arc::new(HashMap::new()),
+            filter_hashes: Arc::new(RwLock::new(HashMap::new())),
+            check_points: Arc::new(RwLock::new(HashMap::new())),
             inner_sender,
             inner_receiver,
         }
@@ -76,21 +73,21 @@ impl<S> FilterProtocol<S> {
     fn insert_hashes(&mut self, peer:PeerIndex, _hashes: packed::GcsFilterHashes){
         let stop_hash = _hashes.stop_hash().clone();
         let parent_hash = _hashes.parent_hash().clone();
-        let hash_len = _hashes.len();
+        let hash_len = _hashes.filter_hashes().len();
         let parent_num = self.store.get_header(parent_hash.clone())?.number();
         let stop_num = self.store.get_header(stop_hash.clone())?.number();
-        
-        
+
+
         //check parent_hash
-        if stop_num >= parent_num && stop_num - parent_num == len  {
-            self.filter_hashes.write().unwrap().insert(peer.clone(), _hashes);
+        if stop_num >= parent_num && stop_num - parent_num == hash_len  {
+            self.filter_hashes.write().insert(peer.clone(), _hashes);
             info!("insert hashes from peer: {}, stop_hash is {}, parent_hash is {}, hash len is {}.",
                     peer,
                     stop_hash,
                     parent_hash,
-                    len
+                    hash_len
             );
-            //send msg 
+            //send msg
             self.inner_sender.send(GcsMessage::GetFilters(peer.clone()));
         }
     }
@@ -99,30 +96,30 @@ impl<S> FilterProtocol<S> {
     //check_points: Arc<RwLock<HashMap<PeerIndex,Box<packed::GcsFilterCheckPoint>>>>
     fn insert_checkpoints(&mut self, peer:PeerIndex, _check_points: packed::GcsFilterCheckPoint){
         let stop_hash = _check_points.stop_hash();
-        let last_filter_hash = _check_points.filter_hashes()[_check_points.filter_hashes().len() - 1].clone();
-        let _times:u32 = 1;
+        let Some(last_filter_hash) = _check_points.filter_hashes().get(_check_points.filter_hashes().len() - 1);
+        let _times:usize = 1;
 
-        for checkpoints in self.check_points.read().unwrap().values() {
+        for checkpoints in self.check_points.read().values() {
             //if the flag is set to true, return without process
             if checkpoints.flag == true {
                 return;
             }
             if checkpoints.stop_hash == stop_hash {
-                let len = checkpoints.filter_hashes().len();
-                if checkpoints.filter_hashes()[len -1] == last_filter_hash {
+                let len = checkpoints.check_points.len();
+                if checkpoints.check_points.get(len -1) == Some(last_filter_hash) {
                     _times += 1;
                 }
             }
         }
         
         let valid_peers = self.peers.valid_peer_num();
-        let data_len = self.check_points.read().unwrap().len();
-        if _times == valid_peers || _times > 1 && _times > data_len + 1 / 2 {
-            self.check_points.write().unwrap().clear();
-            self.check_points.write().unwrap().insert(peer.clone(), CheckPoints::new(_check_points, true));
+        let data_len = self.check_points.read().len();
+        if _times == valid_peers || _times > 1 && _times > (data_len + 1) / 2 {
+            self.check_points.write().clear();
+            self.check_points.write().insert(peer.clone(), CheckPoints::new(_check_points, true));
             self.inner_sender.send(GcsMessage::GetFilterHashes(peer.clone()));
         }else{
-            self.check_points.write().unwrap().insert(peer.clone(), CheckPoints::new(_check_points,false));
+            self.check_points.write().insert(peer.clone(), CheckPoints::new(_check_points,false));
         }
     }
 }
@@ -144,7 +141,7 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
         nc.set_notify(Duration::from_millis(100), CONTROL_RECEIVER_TOKEN)
             .expect("set_notify should be ok");
     }
-
+    
     fn notify(&mut self, nc: Arc<dyn CKBProtocolContext + Sync>, token: u64) {
         match token {
             GCS_FILTER_MSG_TOKEN => {
@@ -160,7 +157,7 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                                 self.inner_sender.send(GcsMessage::GetCheckPoint).unwrap();
                                 return;
                             }
-                            let stop_num = self.store.tip()
+                            let stop_hash = self.store.tip()
                                 .expect("store should be OK")
                                 .expect("tip stored").hash();
                             let message = packed::GcsFilterMessage::new_builder()
@@ -174,11 +171,11 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
 
                             let peers: Vec<PeerIndex> = self
                                 .peers
+                                .get_peers()
                                 .read()
-                                .unwrap()
                                 .iter()
                                 .filter_map(|(peer, peer_state)| {
-                                    if peer_state.state == true {
+                                    if peer_state.state() == true {
                                         Some(*peer)
                                     } else {
                                         None
@@ -197,10 +194,10 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                         GcsMessage::GetFilterHashes(peer) => {
                             //get the last filter info 
                             let start_block_hash = self.store.get_lastest_hash()?.expect("stored lastest filter");
-                            let start_block_num = self.store.get_header(start_block_hash)?.number();
+                            let start_block_num = self.store.get_header(start_block_hash)?.expect("stored head").number();
                             //get stop hash from checkpoint
-                            let stop_hash = self.check_points.read().unwrap()
-                                .get(peer.clone()).unwrap().stop_hash.clone();
+                            let stop_hash = self.check_points.read()
+                                .get(&peer).unwrap().stop_hash.clone();
                             let message = packed::GcsFilterMessage::new_builder()
                                 .set(
                                     packed::GetGcsFilterHashes::new_builder()
@@ -212,11 +209,11 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
 
                             let peers: Vec<PeerIndex> = self
                                 .peers
+                                .get_peers()
                                 .read()
-                                .unwrap()
                                 .iter()
                                 .filter_map(|(peer, peer_state)| {
-                                    if peer_state.state == true {
+                                    if peer_state.state() == true {
                                         Some(*peer)
                                     } else {
                                         None
@@ -232,7 +229,7 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                                     }
                                 });
                             //send GcsMessage::GetCheckPoint
-                            self.check_points.write().unwrap().clear();
+                            self.check_points.write().clear();
                             self.inner_sender.send(GcsMessage::GetCheckPoint).unwrap();
                              
                         } 
@@ -240,12 +237,12 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                             //send get filters
                             //get the last filter info
                             let start_block_hash = self.store.get_lastest_hash()?.expect("stored lastest filter");
-                            let start_block_num = self.store.get_header(start_block_hash)?.number();
+                            let start_block_num = self.store.get_header(start_block_hash)?.expect("store head").number();
                             //get stop hash from filterhashes
                             let stop_hash = self
-                                .filter_hashes.read().unwrap()
-                                .get(peer.clone()).unwrap()
-                                .stop_hash.clone();
+                                .filter_hashes.read()
+                                .get(&peer).unwrap()
+                                .stop_hash();
  
                             let message = packed::GcsFilterMessage::new_builder()
                                 .set(
@@ -261,11 +258,13 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                         }
                         _ => unreachable!(),
                     }
+                }
             }    
             CONTROL_RECEIVER_TOKEN => {
                 if let Ok(msg) = self.control_receiver.try_recv() {
                     match msg {
                         ControlMessage::SendTransaction(transaction) => {
+                            /*
                             if let Some((peer, _)) = self.peer_filter_hash_seed {
                                 let message = packed::GcsFilterMessage::new_builder()
                                     .set(
@@ -281,6 +280,8 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                                     debug!("GcsFilterProtocol send SendTransaction error: {:?}", ret);
                                 }
                             }
+                            */
+                            debug!("GcsFilterProtocol send SendTransaction TODO:");
                         }
                         _ => unreachable!(),
                     }
@@ -336,16 +337,20 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                 get the stop num from filter_hashes, and get the index of filter_hash,
                 then compare it to hash of this filter
                 */
-                let compare_result = 
-                    match self.filter_hashes.read().unwrap().get(peer.clone()) {
+                let Some(compare_result) = 
+                    match self.filter_hashes.read().get(&peer) {
                         Some(value) => {
-                            let stop_num = self.store.get_header(value.stop_hash)?.number();
-                            if filter_hash == value.filter_hashes[value.len() - stop_num + block_num -1] {
-                                true
+                            let stop_num = self.store.get_header(value.stop_hash())?.number();
+                            if filter_hash == value
+                                .filter_hashes()
+                                .get(value.filter_hashes().len() - stop_num + block_num -1).unwrap() {
+                                Some(true)
+                            }else {
+                                Some(false)
                             }
                         },
-                        None => false,
-                    }
+                        None => Some(false),
+                    };
                  
                 //check if the lastest filter's blockhash is this one's parent
                 //get the lastest filter's blockhash
@@ -356,26 +361,6 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                         //insert into store
                         self.store.insert_gcsfilter(gcs_filter)
                           .expect("store gcs filter should be OK");
-                        /*
-                        //match script
-                        let scripts = self
-                            .get_scripts()?
-                            .into_iter()
-                            .map(|(script, _block_number)| script)
-                            .collect::<Vec<_>>();
-                        //store filtered block hash
-                        let gcs_reader = build_gcs_filter_reader();
-                        let Ok(ret) = gcs_reader
-                            .match_any(&mut gcs_filter.filter(), &mut scripts.iter().map(|script| script.as_slice()))
-                            .unwrap();
-                        if ret == true {
-                            if Ok(true) == pending_get_filtered_blocks.write().unwrap()
-                                .insert(gcs_filter.block_hash()){
-                                info!("insert block {} into pending_get_filtered_blocks.", gcs_filter.block_hash());
-                                self.inner_sender.send(GcsMessage::GetFilterBlock(gcs_filter.block_hash())).unwrap();
-                            }
-                        }
-                        */
                     }
                 }
             }
@@ -388,7 +373,7 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                     filter_hashes.filter_hashes().len()
                 );
                 //inert into filter_hashes 
-                self.insert_hashes(peer, &filter_hashes);
+                self.insert_hashes(peer, filter_hashes);
             }
             packed::GcsFilterMessageUnionReader::GcsFilterCheckPoint(reader) => {
                 //GcsFilterCheckPoint
@@ -408,7 +393,7 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
     }
 
     fn disconnected(&mut self, _nc: Arc<dyn CKBProtocolContext + Sync>, _peer: PeerIndex) {
-        self.peers.write().remove(_peer);
+        self.peers.remove_peer(_peer);
     }
     /*
     fn build_gcs_filter_reader() -> golomb_coded_set::GCSFilterReader {
