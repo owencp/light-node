@@ -97,7 +97,7 @@ impl<S> SyncProtocol<S> {
         //insert headers
         let mut cur_iter = 0;
         let mut loop_flag = false;
-        let mut cur_headers = HashMap::new();
+        let mut cur_headers = Vec::new();
         let header_provider = HeaderProviderWrapper { store: &self.store };
         let header_verifier = HeaderVerifier::new(&self.consensus, &header_provider);
         loop {
@@ -116,9 +116,9 @@ impl<S> SyncProtocol<S> {
                 break;
             }
 
-            cur_headers = self.peer_headers.read().get(&tmp_peer).unwrap();
-            cur_headers = cur_headers[&(cur_iter..)].to_vec();
-            for header in cur_headers.get(&tmp_peer).unwrap() {
+            cur_headers = self.peer_headers.read().get(&tmp_peer).unwrap().to_vec();
+            cur_headers = cur_headers[cur_iter..].to_vec();
+            for header in cur_headers {
                 match header_verifier.verify(&header) {
                     Ok(_) => {
                         self
@@ -326,21 +326,29 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for SyncProtocol<S> {
                     }
                 };
 
-                let stop_block_num = self.store.get_header(stop_block_hash.clone())?.number();
+                let stop_block_num = self.store.get_header(stop_block_hash.clone())
+                    .expect("store should be OK")
+                    .expect("store header")
+                    .number();
                 let mut filtered_last_block_num :BlockNumber = 0;
                 
                 //let block_hashes: Vec<Byte32>= Vec::new();
                 //get all Scripts
                 let mut scripts = self.store
-                    .get_scripts()?
+                    .get_scripts()
+                    .expect("store script")
                     .into_iter()
                     .map(|(script, _block_number)| script)
                     .collect::<Vec<_>>();
                 let mut block_hashes = Vec::new();
                 for block_number in (start_block_num..=stop_block_num).take(MAX_HEADERS_LEN) {
-                    let block_hash = self.store.get_block_hash(block_number.clone())?.expect("stored block hash");
-                    let filter = self.store.get_gcsfilter(block_hash.clone())?.expect("stored gcs filter");
-                    let mut input = Cursor::new(filter.unpack());
+                    let block_hash = self.store.get_block_hash(block_number.clone())
+                        .expect("store should be ok")
+                        .expect("stored block hash");
+                    let filter = self.store.get_gcsfilter(block_hash.clone())
+                        .expect("store should be ok")
+                        .expect("stored gcs filter");
+                    let mut input = Cursor::new(filter.as_slice());
                     if true == self.filter_reader
                         .match_any(&mut input, &mut scripts.iter().map(|script| script.as_slice()))
                         .unwrap(){

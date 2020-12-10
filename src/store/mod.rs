@@ -2,6 +2,12 @@ use std::collections::HashMap;
 mod sled;
 pub use self::sled::SledStore;
 
+use ckb_types::{
+    core::{BlockNumber, HeaderView, BlockView},
+    packed,
+    U256,
+};
+
 #[derive(Debug)]
 pub enum Error {
     DBError(String),
@@ -45,6 +51,112 @@ pub trait Store {
             s.2 += value.len();
         }
         Ok(statistics)
+    }
+
+    fn tip(&self) -> Result<Option<HeaderView>, Error> {
+        Ok(None)
+    }
+    fn get_header(&self, block_hash: packed::Byte32) -> Result<Option<HeaderView>, Error> {
+        Ok(None)
+    }
+    fn get_total_difficulty(&self, block_hash: packed::Byte32) -> Result<Option<U256>, Error> {
+        Ok(None)
+    }
+    fn get_block_hash(
+        &self,
+        block_number: BlockNumber,
+    ) -> Result<Option<packed::Byte32>, Error> {
+        Ok(None)
+    }
+
+    fn init(&self, genesis: HeaderView) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn insert_gcsfilter(&self, filter: packed::GcsFilter)->Result<(), Error> {
+        Ok(())
+    }
+
+    fn get_gcsfilter(&self, block_hash: packed::Byte32) -> Result<Option<packed::Bytes>, Error> {
+        Ok(None)
+    }
+
+    fn get_lastest_hash(&self)->Result<Option<packed::Byte32>, Error> {
+        Ok(None)
+    }
+
+    fn get_lastest_block_num(&self)->Result<Option<BlockNumber>, Error> {
+        Ok(None)
+    }
+
+    fn insert_header(&self, header: HeaderView) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn get_locator(&self) -> Result<Vec<packed::Byte32>, Error> {
+        Ok(Vec::new())
+    }
+
+    fn insert_filtered_block(
+        &self,
+        block: BlockView
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn get_out_point(
+        &self,
+        out_point: packed::OutPoint,
+    ) -> Result<Option<(packed::CellOutput, packed::Bytes, BlockNumber)>, Error> {
+        Ok(None)
+    }
+
+    fn get_consumed_out_point(
+        &self,
+        out_point: packed::OutPoint,
+    ) -> Result<Option<(packed::CellOutput, packed::Bytes, BlockNumber)>, Error> {
+        Ok(None)
+    }
+
+    fn insert_script(
+        &self,
+        script: packed::Script,
+        block_number: BlockNumber,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn update_scripts(&mut self, last_number: BlockNumber) -> Result<(), Error> {
+        Ok(())
+    }
+    fn get_cells(
+        &self,
+        script: &packed::Script,
+    ) -> Result<
+        Vec<(
+            packed::OutPoint,
+            packed::CellOutput,
+            packed::Bytes,
+            BlockNumber,
+        )>,
+        Error> {
+        Ok(Vec::new())
+    }
+    
+    fn get_consumed_cells(
+        &self,
+        script: &packed::Script,
+    ) -> Result<
+        Vec<(
+            packed::OutPoint,
+            packed::CellOutput,
+            packed::Bytes,
+            BlockNumber,
+            packed::Byte32,
+            BlockNumber,
+        )>,
+        Error> {
+        Ok(Vec::new())
     }
 }
 

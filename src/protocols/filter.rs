@@ -74,8 +74,16 @@ impl<S> FilterProtocol<S> {
         let stop_hash = _hashes.stop_hash().clone();
         let parent_hash = _hashes.parent_hash().clone();
         let hash_len = _hashes.filter_hashes().len();
-        let parent_num = self.store.get_header(parent_hash.clone())?.number();
-        let stop_num = self.store.get_header(stop_hash.clone())?.number();
+
+        let Some(parent_num) =  match self.store.get_header(parent_hash.clone()) {
+            Ok(header) => Some(header.number()),
+            Err(_) => None
+        };
+        
+        let Some(stop_num) = match self.store.get_header(stop_hash.clone()) {
+            Ok(header) => Some(header.number()),
+            Err(_) => None
+        };
 
 
         //check parent_hash
@@ -193,8 +201,13 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                         }
                         GcsMessage::GetFilterHashes(peer) => {
                             //get the last filter info 
-                            let start_block_hash = self.store.get_lastest_hash()?.expect("stored lastest filter");
-                            let start_block_num = self.store.get_header(start_block_hash)?.expect("stored head").number();
+                            let start_block_hash = self.store.get_lastest_hash()
+                                .expect("store should be OK")
+                                .expect("filter hanshes stored");
+                            let start_block_num = self.store.get_header(start_block_hash)
+                                .expect("stored should be OK")
+                                .expect("get header stored")
+                                .number();
                             //get stop hash from checkpoint
                             let stop_hash = self.check_points.read()
                                 .get(&peer).unwrap().stop_hash.clone();
@@ -236,8 +249,13 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                         GcsMessage::GetFilters(peer) => {
                             //send get filters
                             //get the last filter info
-                            let start_block_hash = self.store.get_lastest_hash()?.expect("stored lastest filter");
-                            let start_block_num = self.store.get_header(start_block_hash)?.expect("store head").number();
+                            let start_block_hash = self.store.get_lastest_hash()
+                                .expect("stored should be OK")
+                                .expect("stored lastest filter");
+
+                            let start_block_num = self.store.get_header(start_block_hash)
+                                .expect("stored should be OK")
+                                .expect("store head").number();
                             //get stop hash from filterhashes
                             let stop_hash = self
                                 .filter_hashes.read()
@@ -329,9 +347,12 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                 );
                  
                 //check and insert to store
-                let block_num = self.store.get_header(gcs_filter.block_hash())?.number();
-                let filter = gcs_filter.filter().unpack();
-                let filter_hash = blake2b_256(filter.clone()).pack();
+                let block_num = self.store.get_header(gcs_filter.block_hash())
+                    .expect("store should be OK")
+                    .expect("store header")
+                    .number();
+                let filter:Bytes = gcs_filter.filter().unpack();
+                let filter_hash = blake2b_256(filter).pack();
                 
                 /*
                 get the stop num from filter_hashes, and get the index of filter_hash,
@@ -340,10 +361,14 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                 let Some(compare_result) = 
                     match self.filter_hashes.read().get(&peer) {
                         Some(value) => {
-                            let stop_num = self.store.get_header(value.stop_hash())?.number();
+                            let stop_num = self.store.get_header(value.stop_hash())
+                                .expect("store should be OK")
+                                .expect("store header")
+                                .number();
+                            let gap_len = (stop_num - block_num) as usize;
                             if filter_hash == value
                                 .filter_hashes()
-                                .get(value.filter_hashes().len() - stop_num + block_num -1).unwrap() {
+                                .get(value.filter_hashes().len() - gap_len -1).unwrap() {
                                 Some(true)
                             }else {
                                 Some(false)
@@ -355,8 +380,14 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                 //check if the lastest filter's blockhash is this one's parent
                 //get the lastest filter's blockhash
                 if compare_result == true {
-                    let lastest_hash = self.store.get_lastest_hash()?;
-                    let this_one_parent_hash = self.store.get_header(gcs_filter.block_hash())?.parent_hash();
+                    let lastest_hash = self.store.get_lastest_hash()
+                        .expect("store should be OK")
+                        .expect("store filter hash");
+                    
+                    let this_one_parent_hash = self.store.get_header(gcs_filter.block_hash())
+                        .expect("store should be OK")
+                        .expect("store header")
+                        .parent_hash();
                     if lastest_hash == this_one_parent_hash {
                         //insert into store
                         self.store.insert_gcsfilter(gcs_filter)
