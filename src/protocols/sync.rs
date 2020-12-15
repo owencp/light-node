@@ -59,10 +59,26 @@ impl<S> SyncProtocol<S> {
             peer_headers: Arc::new(RwLock::new(HashMap::new())),
         }
     }
+}
 
+impl<S: Store + Send + Sync> SyncProtocol<S> {
+    fn send_get_headers(&mut self, nc: Arc<dyn CKBProtocolContext + Sync>, peer: PeerIndex) {
+        let locator_hashes = self.store.get_locator().expect("store should be OK");
+        let message = packed::SyncMessage::new_builder()
+            .set(
+                packed::GetHeaders::new_builder()
+                    .block_locator_hashes(locator_hashes.pack())
+                    .hash_stop(Byte32::zero())
+                    .build(),
+            )
+            .build();
+        if let Err(err) = nc.send_message_to(peer, message.as_bytes()) {
+            debug!("SyncProtocol send GetHeaders error: {:?}", err);
+        }
+    }
+    
     fn insert_peer_datas(&mut self, peer:PeerIndex, headers:Vec<HeaderView>){
-        let mut _peer_hash = self.peer_headers.write();
-        _peer_hash.insert(peer, Box::new(headers));
+        self.peer_headers.write().insert(peer, Box::new(headers));
         //check the numbers of peers
         let peers: Vec<PeerIndex> = self
             .peers
@@ -78,7 +94,7 @@ impl<S> SyncProtocol<S> {
             })
             .collect();
         let peers_num = peers.len();
-        let peer_datas_num = _peer_hash.len();
+        let peer_datas_num = self.peer_headers.read().len();
         if peer_datas_num >= peers_num {
             /*
             let _sender = self.sender.clone();
@@ -86,12 +102,12 @@ impl<S> SyncProtocol<S> {
             _sender.send(SendMessage::ProcessHeaderMsg).unwrap();
             */
             let num = self.check_and_insert_headers();
-            _peer_hash.clear();
+            self.peer_headers.write().clear();
             //send get header
             self.sender.send(SendMessage::GetHeaderMsg(num)).unwrap();
         }
     }
-    
+
     //notify callback
     fn check_and_insert_headers(&mut self) -> usize {
         //insert headers
@@ -127,7 +143,7 @@ impl<S> SyncProtocol<S> {
                             .expect("store should be OK");
                         cur_iter += 1;
                     }
-                    Err(err) => {        
+                    Err(err) => {
                         warn!("Peer {} sends us an invalid header: {:?}", tmp_peer, err);
                         /*
                         nc.ban_peer(
@@ -139,7 +155,7 @@ impl<S> SyncProtocol<S> {
                         //delete datas with start_block_hash
                         self.peers.change_peer_state(tmp_peer, false);
                         break;
-                    }   
+                    }
                 }
             }
         }
@@ -149,33 +165,8 @@ impl<S> SyncProtocol<S> {
             .expect("store should be OK")
             .expect("tip stored");
         info!("new tip {:?}, {:?}", header.number(), header.hash());
-        
-        cur_iter as usize
-    }
-    /*
-    fn build_gcs_filter_reader() -> golomb_coded_set::GCSFilterReader {
-        // use same value as bip158
-        let p = 19;
-        let m = 1.497_137 * f64::from(2u32.pow(p));
-        golomb_coded_set::GCSFilterReader::new(0, 0, m as u64, p as u8)
-    }
-    */
-}
 
-impl<S: Store + Send + Sync> SyncProtocol<S> {
-    fn send_get_headers(&mut self, nc: Arc<dyn CKBProtocolContext + Sync>, peer: PeerIndex) {
-        let locator_hashes = self.store.get_locator().expect("store should be OK");
-        let message = packed::SyncMessage::new_builder()
-            .set(
-                packed::GetHeaders::new_builder()
-                    .block_locator_hashes(locator_hashes.pack())
-                    .hash_stop(Byte32::zero())
-                    .build(),
-            )
-            .build();
-        if let Err(err) = nc.send_message_to(peer, message.as_bytes()) {
-            debug!("SyncProtocol send GetHeaders error: {:?}", err);
-        }
+        cur_iter as usize
     }
 }
 
@@ -315,13 +306,13 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for SyncProtocol<S> {
                 //get the lastest block num from Script store as the start block
                 let start_block_num: BlockNumber = match self.store.get_lastest_block_num() {
                     Ok(Some(num)) => num + 1,
-                    Err(_) => 0 as BlockNumber,
+                    _ => 0 as BlockNumber,
                 };
                 
                 //get the lastest block from filters store
                 let  stop_block_hash: packed::Byte32 = match self.store.get_lastest_hash() {
                     Ok(Some(hash)) => hash,
-                    Err(_) => {
+                    _ => {
                         return;
                     }
                 };
@@ -334,7 +325,7 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for SyncProtocol<S> {
                 
                 //let block_hashes: Vec<Byte32>= Vec::new();
                 //get all Scripts
-                let mut scripts = self.store
+                let scripts = self.store
                     .get_scripts()
                     .expect("store script")
                     .into_iter()
@@ -390,7 +381,7 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for SyncProtocol<S> {
                         });
                 //update filtered blocknumber 
                 if filtered_last_block_num > 0 {
-                    self.store.update_scripts(filtered_last_block_num);
+                    self.store.update_scripts(filtered_last_block_num).expect("update scripts should be OK");
                 }
             }
             _ => unreachable!(),

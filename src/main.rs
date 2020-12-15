@@ -1,19 +1,23 @@
 use ckb_app_config::NetworkConfig;
-use gcs_filter::protocols::{ChainStore, FilterProtocol, SyncProtocol,Peers};
-use gcs_filter::service::RpcService;
-use gcs_filter::store::{SledStore, Store};
+pub mod protocols;
+pub mod service;
+pub mod store;
+use crate::store::{SledStore, Store};
+use crate::protocols::{ChainStore, FilterProtocol, SyncProtocol,Peers};
+use crate::service::RpcService;
 use ckb_logger::info;
 use ckb_logger_config::Config as LogConfig;
 use ckb_network::{
-    BlockingFlag, CKBProtocol, DefaultExitHandler, ExitHandler, NetworkService, NetworkState,
-    NetworkProtocols,MAX_FRAME_LENGTH_GCSFILTER, MAX_FRAME_LENGTH_RELAY, MAX_FRAME_LENGTH_SYNC,
+    BlockingFlag, CKBProtocol, DefaultExitHandler, ExitHandler, NetworkService, NetworkState, SupportProtocols,
 };
+use ckb_async_runtime::new_global_runtime;
 use clap::{App, Arg};
 use crossbeam_channel::unbounded;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+//use std::thread;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Config {
@@ -22,7 +26,7 @@ struct Config {
 }
 
 fn main() {
-    let matches = App::new("ckb fcs light node")
+    let matches = App::new("ckb gcs light node")
         .arg(
             Arg::with_name("listen_uri")
                 .short("l")
@@ -116,10 +120,10 @@ fn init(
     let network_state =
         Arc::new(NetworkState::from_config(config).expect("Init network state failed"));
     let exit_handler = DefaultExitHandler::default();
+
     let required_protocol_ids = vec![
-        NetworkProtocol::SYNC.into(),
-        NetworkProtocol::RELAY.into(),
-        NetworkProtocol::GCSFILTER.into(),
+        SupportProtocols::Sync.protocol_id(),
+        SupportProtocols::GcsFilter.protocol_id(),
     ];
 
     let mut blocking_recv_flag = BlockingFlag::default();
@@ -129,18 +133,17 @@ fn init(
     
     let sync_protocol = Box::new(SyncProtocol::new(store.clone(), consensus.clone(), peers.clone()));
     let filter_protocol = Box::new(FilterProtocol::new(store, consensus.clone(), receiver, peers.clone()));
-
+/*
     let protocols = vec![
         CKBProtocol::new(
             "syn".to_string(),
             NetworkProtocol::SYNC.into(),
             &["1".to_string()][..],
             MAX_FRAME_LENGTH_SYNC,
-            Box::new(synchronizer.clone()),
+            Box::new(sync_protocol.clone()),
             Arc::clone(&network_state),
             blocking_recv_flag,
         ),
-        /*
         CKBProtocol::new(
             "rel".to_string(),
             NetworkProtocol::RELAY.into(),
@@ -150,18 +153,34 @@ fn init(
             Arc::clone(&network_state),
             blocking_recv_flag,
         ),
-        */
         CKBProtocol::new(
             "gcs".to_string(),
             NetworkProtocol::GCSFILTER.into(),
             &["1".to_string()][..],
             MAX_FRAME_LENGTH_GCSFILTER,
-            Box::new(gcs_filter),
+            Box::new(filter_protocol),
             Arc::clone(&network_state),
             blocking_recv_flag,
         ),
     ];
-
+*/
+    let protocols = vec![
+        CKBProtocol::new_with_support_protocol(
+            SupportProtocols::Sync,
+            sync_protocol,
+            Arc::clone(&network_state),
+        ),
+        CKBProtocol::new_with_support_protocol(
+            SupportProtocols::GcsFilter,
+            filter_protocol,
+            Arc::clone(&network_state),
+        ),
+    ];
+    let (async_handle, _) = new_global_runtime();
+    /*
+    let mut thread_builder = thread::Builder::new();
+    thread_builder = thread_builder.name("NetworkService".to_string());
+    */
     let _network_controller = NetworkService::new(
         Arc::clone(&network_state),
         protocols,
@@ -170,7 +189,7 @@ fn init(
         "ckb-light-node-demo".to_string(),
         exit_handler.clone(),
     )
-    .start(Some("NetworkService"))
+    .start(&async_handle)
     .expect("Start network service failed");
 
     let exit_handler_clone = exit_handler.clone();

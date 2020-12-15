@@ -1,8 +1,8 @@
-mod chain_store;
-mod filter;
-mod header_verifier;
-mod sync;
-mod peers;
+pub mod chain_store;
+pub mod filter;
+pub mod header_verifier;
+pub mod sync;
+pub mod peers;
 
 pub use self::chain_store::{ChainStore, HeaderProviderWrapper};
 pub use self::filter::{ControlMessage, FilterProtocol};

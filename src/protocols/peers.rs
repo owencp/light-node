@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 
 #[derive(Clone)]
-struct PeerState{
+pub struct PeerState{
     version:String,
     send_time:Instant,
     state:bool,
@@ -52,7 +52,7 @@ impl Peers{
     }
     
     pub fn get_peers(&self) -> Arc<RwLock<HashMap<PeerIndex, PeerState>>> {
-        self._peers
+        self._peers.clone()
     }
 
     pub fn change_peer_state(&mut self, peer:PeerIndex, state:bool) {
@@ -97,10 +97,10 @@ impl Peers{
     }
 
     pub fn valid_peer_num(&self) -> usize {
-        let num:usize = 0;
+        let mut num:usize = 0;
         for _peer_state in self._peers.read().values() {
             if _peer_state.state == true {
-                num += 1;
+                num = num + 1;
             }
         }
         num

@@ -1,12 +1,13 @@
-use super::{ChainStore, HeaderProviderWrapper, HeaderVerifier,Peers};
+use super::{ChainStore, Peers};
 use crate::store::Store;
+
 use ckb_chain_spec::consensus::Consensus;
 use ckb_logger::{debug, info};
 use ckb_network::{bytes::Bytes, CKBProtocolContext, CKBProtocolHandler, PeerIndex};
-use ckb_types::{core::{BlockNumber, HeaderView},packed, prelude::*};
+use ckb_types::{packed, prelude::*};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use crossbeam_channel::{unbounded,Sender,Receiver};
 use ckb_hash::blake2b_256;
 use ckb_util::RwLock;
@@ -68,68 +69,6 @@ impl<S> FilterProtocol<S> {
             inner_receiver,
         }
     }
-    
-    //insert filter hashes
-    fn insert_hashes(&mut self, peer:PeerIndex, _hashes: packed::GcsFilterHashes){
-        let stop_hash = _hashes.stop_hash().clone();
-        let parent_hash = _hashes.parent_hash().clone();
-        let hash_len = _hashes.filter_hashes().len();
-
-        let Some(parent_num) =  match self.store.get_header(parent_hash.clone()) {
-            Ok(header) => Some(header.number()),
-            Err(_) => None
-        };
-        
-        let Some(stop_num) = match self.store.get_header(stop_hash.clone()) {
-            Ok(header) => Some(header.number()),
-            Err(_) => None
-        };
-
-
-        //check parent_hash
-        if stop_num >= parent_num && stop_num - parent_num == hash_len  {
-            self.filter_hashes.write().insert(peer.clone(), _hashes);
-            info!("insert hashes from peer: {}, stop_hash is {}, parent_hash is {}, hash len is {}.",
-                    peer,
-                    stop_hash,
-                    parent_hash,
-                    hash_len
-            );
-            //send msg
-            self.inner_sender.send(GcsMessage::GetFilters(peer.clone()));
-        }
-    }
-    
-    //insert checkpoints
-    //check_points: Arc<RwLock<HashMap<PeerIndex,Box<packed::GcsFilterCheckPoint>>>>
-    fn insert_checkpoints(&mut self, peer:PeerIndex, _check_points: packed::GcsFilterCheckPoint){
-        let stop_hash = _check_points.stop_hash();
-        let Some(last_filter_hash) = _check_points.filter_hashes().get(_check_points.filter_hashes().len() - 1);
-        let _times:usize = 1;
-
-        for checkpoints in self.check_points.read().values() {
-            //if the flag is set to true, return without process
-            if checkpoints.flag == true {
-                return;
-            }
-            if checkpoints.stop_hash == stop_hash {
-                let len = checkpoints.check_points.len();
-                if checkpoints.check_points.get(len -1) == Some(last_filter_hash) {
-                    _times += 1;
-                }
-            }
-        }
-        
-        let valid_peers = self.peers.valid_peer_num();
-        let data_len = self.check_points.read().len();
-        if _times == valid_peers || _times > 1 && _times > (data_len + 1) / 2 {
-            self.check_points.write().clear();
-            self.check_points.write().insert(peer.clone(), CheckPoints::new(_check_points, true));
-            self.inner_sender.send(GcsMessage::GetFilterHashes(peer.clone()));
-        }else{
-            self.check_points.write().insert(peer.clone(), CheckPoints::new(_check_points,false));
-        }
-    }
 }
 
 pub enum ControlMessage {
@@ -142,6 +81,70 @@ pub enum GcsMessage {
     GetFilters(PeerIndex),
 }
 
+impl<S: Store + Send + Sync> FilterProtocol<S> {
+    //insert filter hashes
+    fn insert_hashes(&mut self, peer:PeerIndex, _hashes: packed::GcsFilterHashes){
+        let stop_hash = _hashes.stop_hash().clone();
+        let parent_hash = _hashes.parent_hash().clone();
+        let hash_len = _hashes.filter_hashes().len();
+
+        let parent_num =  match self.store.get_header(parent_hash.clone()) {
+            Ok(Some(header)) => header.number(),
+            _=> 0
+        };
+
+        let stop_num = match self.store.get_header(stop_hash.clone()) {
+            Ok(Some(header)) => header.number(),
+            _=> 0
+        };
+
+
+        //check parent_hash
+        if stop_num >= parent_num && (stop_num - parent_num) as usize == hash_len  {
+            self.filter_hashes.write().insert(peer.clone(), _hashes);
+            info!("insert hashes from peer: {}, stop_hash is {}, parent_hash is {}, hash len is {}.",
+                    peer,
+                    stop_hash,
+                    parent_hash,
+                    hash_len
+            );
+            //send msg
+            self.inner_sender.send(GcsMessage::GetFilters(peer.clone())).unwrap();
+        }
+    }
+    //insert checkpoints
+    //check_points: Arc<RwLock<HashMap<PeerIndex,Box<packed::GcsFilterCheckPoint>>>>
+    fn insert_checkpoints(&mut self, peer:PeerIndex, _check_points: packed::GcsFilterCheckPoint){
+        let stop_hash = _check_points.stop_hash();
+        if let Some(last_filter_hash) = _check_points.filter_hashes().get(_check_points.filter_hashes().len() - 1) {
+            let mut _times = 1;
+
+            for checkpoints in self.check_points.read().values() {
+                //if the flag is set to true, return without process
+                if checkpoints.flag == true {
+                    return;
+                }
+                if checkpoints.stop_hash == stop_hash {
+                    let len = checkpoints.check_points.len();
+                    if checkpoints.check_points.get(len -1) == Some(last_filter_hash.clone()) {
+                        _times += 1;
+                    }
+                }
+            }
+
+            let valid_peers = self.peers.valid_peer_num();
+            let data_len = self.check_points.read().len();
+            if _times == valid_peers || _times > 1 && _times > (data_len + 1) / 2 {
+                self.check_points.write().clear();
+                self.check_points.write().insert(peer.clone(), CheckPoints::new(_check_points, true));
+                self.inner_sender.send(GcsMessage::GetFilterHashes(peer.clone())).unwrap();
+            }else{
+                self.check_points.write().insert(peer.clone(), CheckPoints::new(_check_points,false));
+            }
+        }
+    }
+}
+
 impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
     fn init(&mut self, nc: Arc<dyn CKBProtocolContext + Sync>) {
         nc.set_notify(Duration::from_millis(10), GCS_FILTER_MSG_TOKEN)
@@ -149,7 +152,7 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
         nc.set_notify(Duration::from_millis(100), CONTROL_RECEIVER_TOKEN)
             .expect("set_notify should be ok");
     }
-    
+
     fn notify(&mut self, nc: Arc<dyn CKBProtocolContext + Sync>, token: u64) {
         match token {
             GCS_FILTER_MSG_TOKEN => {
@@ -358,7 +361,7 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                 get the stop num from filter_hashes, and get the index of filter_hash,
                 then compare it to hash of this filter
                 */
-                let Some(compare_result) = 
+                let compare_result = 
                     match self.filter_hashes.read().get(&peer) {
                         Some(value) => {
                             let stop_num = self.store.get_header(value.stop_hash())
@@ -369,12 +372,12 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                             if filter_hash == value
                                 .filter_hashes()
                                 .get(value.filter_hashes().len() - gap_len -1).unwrap() {
-                                Some(true)
+                                true
                             }else {
-                                Some(false)
+                                false
                             }
                         },
-                        None => Some(false),
+                        _ => false,
                     };
                  
                 //check if the lastest filter's blockhash is this one's parent
