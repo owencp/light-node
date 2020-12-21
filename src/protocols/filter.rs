@@ -302,7 +302,7 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                                 .get(&peer).unwrap()
                                 .stop_hash();
                             start_block_num = start_block_num + 1;
-                            let mut stop_block_num = self.store.get_header(stop_hash.clone())
+                            let stop_block_num = self.store.get_header(stop_hash.clone())
                                 .expect("stored should be OK")
                                 .expect("store head").number();
                             //stop_block_num = scale_stop_num(start_block_num, stop_block_num);
