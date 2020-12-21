@@ -18,6 +18,7 @@ pub enum Key {
     FilteredBlock(BlockNumber, packed::Byte32),
     Script(packed::Script),
     GcsFilter(packed::Byte32),
+    GcsRecord(BlockNumber),
 }
 
 #[repr(u8)]
@@ -29,6 +30,7 @@ pub enum KeyPrefix {
     FilteredBlock = 96,
     Script = 64,
     GcsFilter = 32,
+    GcsRecord = 16,
 }
 
 pub type IOIndex = u32;
@@ -52,6 +54,7 @@ pub enum Value {
     GcsFilter(
         packed::Bytes,  // filter
     ),
+    GcsRecord(packed::Byte32),
 }
 
 impl Key {
@@ -93,6 +96,10 @@ impl Into<Vec<u8>> for Key {
             Key::GcsFilter(block_hash) => {
                 encoded.push(KeyPrefix::GcsFilter as u8);
                 encoded.extend_from_slice(block_hash.as_slice());
+            }
+            Key::GcsRecord(block_number) => {
+                encoded.push(KeyPrefix::GcsRecord as u8);
+                encoded.extend_from_slice(&block_number.to_be_bytes());
             }
         }
         encoded
@@ -145,6 +152,9 @@ impl Into<Vec<u8>> for Value {
                 filter
             ) => {
                 encoded.extend_from_slice(filter.as_slice());
+            }
+            Value::GcsRecord(block_hash) => {
+                encoded.extend_from_slice(block_hash.as_slice());
             }
         }
         encoded
@@ -226,11 +236,19 @@ impl<S: Store> ChainStore<S> {
             ),
         )?;
         batch.put_kv(Key::ActiveChain(0), Value::ActiveChain(genesis.hash()))?;
+        //insert init filter
+        batch.put_kv(
+            Key::GcsFilter(genesis.hash()),
+            Value::GcsFilter(packed::Bytes::default()),
+        )?;
+        //insert init record
+        batch.put_kv(Key::GcsRecord(0),Value::GcsRecord(genesis.hash()))?;
         batch.commit()
     }
 
     //Gcs filter
     pub fn insert_gcsfilter(&self, filter: packed::GcsFilter)->Result<(), Error> {
+        println!("insert gcs filter =========== {}", filter.block_hash());
         let mut batch = self.store.batch()?;
         batch.put_kv(
             Key::GcsFilter(filter.block_hash()),
@@ -252,18 +270,27 @@ impl<S: Store> ChainStore<S> {
         let mut iter = self
             .store
             .iter(
-                &[KeyPrefix::GcsFilter as u8 + 1],
+                &[KeyPrefix::GcsRecord as u8 + 1],
                 IteratorDirection::Reverse,
             )?
-            .take_while(|(key, _value)| key.starts_with(&[KeyPrefix::GcsFilter as u8]));
+            .take_while(|(key, _value)| key.starts_with(&[KeyPrefix::GcsRecord as u8]));
 
         if let Some(tip_hash) = iter.next().map(|(_key, value)| {
-            packed::Byte32Reader::from_slice_should_be_ok(&_key[..]).to_entity()
+            packed::Byte32Reader::from_slice_should_be_ok(&value[..]).to_entity()
         }) {
             Ok(Some(tip_hash))
         } else {
             Ok(None)
         }
+    }
+    
+    pub fn insert_record(&mut self, block_num:BlockNumber, hash:packed::Byte32)->Result<(), Error> {
+        let mut batch = self.store.batch()?;
+        batch.put_kv(
+            Key::GcsRecord(block_num),
+            Value::GcsRecord(hash),
+        )?;
+        batch.commit()
     }
     
     //get the lastest filter block number
@@ -530,8 +557,18 @@ impl<S: Store> ChainStore<S> {
     pub fn insert_script(
         &self,
         script: packed::Script,
-        block_number: BlockNumber,
     ) -> Result<(), Error> {
+        let mut block_number:BlockNumber = 0;
+        //get current block num from other script
+        let scripts = self
+            .get_scripts()
+            .expect("store script")
+            .into_iter()
+            .map(|(_script, block_number)| block_number)
+            .collect::<Vec<_>>();
+        if scripts.len() != 0 {
+            block_number = scripts[0];
+        }
         let mut batch = self.store.batch()?;
         batch.put_kv(Key::Script(script), Value::Script(block_number))?;
         batch.commit()

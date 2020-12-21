@@ -125,45 +125,12 @@ fn init(
         SupportProtocols::Sync.protocol_id(),
         SupportProtocols::GcsFilter.protocol_id(),
     ];
-
     let mut blocking_recv_flag = BlockingFlag::default();
     blocking_recv_flag.disable_connected();
     blocking_recv_flag.disable_disconnected();
     blocking_recv_flag.disable_notify();
-    
     let sync_protocol = Box::new(SyncProtocol::new(store.clone(), consensus.clone(), peers.clone()));
     let filter_protocol = Box::new(FilterProtocol::new(store, consensus.clone(), receiver, peers.clone()));
-/*
-    let protocols = vec![
-        CKBProtocol::new(
-            "syn".to_string(),
-            NetworkProtocol::SYNC.into(),
-            &["1".to_string()][..],
-            MAX_FRAME_LENGTH_SYNC,
-            Box::new(sync_protocol.clone()),
-            Arc::clone(&network_state),
-            blocking_recv_flag,
-        ),
-        CKBProtocol::new(
-            "rel".to_string(),
-            NetworkProtocol::RELAY.into(),
-            &["1".to_string()][..],
-            MAX_FRAME_LENGTH_RELAY,
-            Box::new(relayer),
-            Arc::clone(&network_state),
-            blocking_recv_flag,
-        ),
-        CKBProtocol::new(
-            "gcs".to_string(),
-            NetworkProtocol::GCSFILTER.into(),
-            &["1".to_string()][..],
-            MAX_FRAME_LENGTH_GCSFILTER,
-            Box::new(filter_protocol),
-            Arc::clone(&network_state),
-            blocking_recv_flag,
-        ),
-    ];
-*/
     let protocols = vec![
         CKBProtocol::new_with_support_protocol(
             SupportProtocols::Sync,
@@ -176,7 +143,7 @@ fn init(
             Arc::clone(&network_state),
         ),
     ];
-    let (async_handle, _) = new_global_runtime();
+    let (async_handle, async_stop_handle) = new_global_runtime();
     /*
     let mut thread_builder = thread::Builder::new();
     thread_builder = thread_builder.name("NetworkService".to_string());
@@ -186,12 +153,11 @@ fn init(
         protocols,
         required_protocol_ids,
         consensus.identify_name(),
-        "ckb-light-node-demo".to_string(),
+        "1".to_string(),
         exit_handler.clone(),
     )
     .start(&async_handle)
     .expect("Start network service failed");
-
     let exit_handler_clone = exit_handler.clone();
     ctrlc::set_handler(move || {
         exit_handler_clone.notify_exit();

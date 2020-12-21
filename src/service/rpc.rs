@@ -83,8 +83,8 @@ impl<S: Store + Send + Sync + 'static> RpcService<S> {
                                 .args(Bytes::from(args).pack())
                                 .hash_type(ScriptHashType::Type.into())
                                 .build();
-
-                            chain_store.insert_script(script, 0).unwrap();
+                            
+                            chain_store.insert_script(script).unwrap();
                         }
                         private_key
                     })
@@ -240,7 +240,7 @@ impl<S: Store + Send + Sync + 'static> Rpc for RpcImpl<S> {
                     .hash_type(ScriptHashType::Type.into())
                     .build();
 
-                self.chain_store.insert_script(script, 0).unwrap();
+                self.chain_store.insert_script(script).unwrap();
                 return Ok(());
             }
         }

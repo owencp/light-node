@@ -187,12 +187,17 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for SyncProtocol<S> {
         peer: PeerIndex,
         _version: &str,
     ) {
-        //insert peer to peers
-        self.peers.insert_peer(peer, _version.to_string());
-        if self.peers.peers_num() == 1 {
-            //if the first peer, send a msg to srart the process
-            let _sender = self.sender.clone();
-            _sender.send(SendMessage::GetHeaderMsg(MAX_HEADERS_LEN)).unwrap();
+        if (self.peers.is_peer_exsit(peer) == false){
+            self.peers.insert_peer(peer, _version.to_string());
+            if self.peers.peers_num() == 1 {
+                //if the first peer, send a msg to srart the process
+                self.sender.send(SendMessage::GetHeaderMsg(MAX_HEADERS_LEN)).unwrap();
+            }
+        }else {
+            if self.peers.peers_num() == 1 {
+                //if the first peer, send a msg to srart the process
+                self.sender.send(SendMessage::GetHeaderMsg(MAX_HEADERS_LEN)).unwrap();
+            }
         }
     }
 
@@ -302,25 +307,39 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for SyncProtocol<S> {
                 }
             }
             MATCH_AND_GET_BLOCKS => {
+                
+                let scripts = self.store
+                    .get_scripts()
+                    .expect("store script")
+                    .into_iter()
+                    .map(|(_script, block_number)| block_number)
+                    .collect::<Vec<_>>();
+                if scripts.len() == 0 {
+                    return;
+                }
+                
+                let start_block_num = scripts[0] + 1;
                 let mut count :usize = 0;
+                /*
                 //get the lastest block num from Script store as the start block
                 let start_block_num: BlockNumber = match self.store.get_lastest_block_num() {
                     Ok(Some(num)) => num + 1,
-                    _ => 0 as BlockNumber,
-                };
-                
-                //get the lastest block from filters store
-                let  stop_block_hash: packed::Byte32 = match self.store.get_lastest_hash() {
-                    Ok(Some(hash)) => hash,
                     _ => {
                         return;
                     }
                 };
+                */
+                
+                //get the lastest block from filters store
+                let  stop_block_hash: packed::Byte32 = match self.store.get_lastest_hash() {
+                    Ok(Some(hash)) => hash,
+                    _ => packed::Byte32::default(),
+                };
 
-                let stop_block_num = self.store.get_header(stop_block_hash.clone())
-                    .expect("store should be OK")
-                    .expect("store header")
-                    .number();
+                let stop_block_num: BlockNumber = match self.store.get_header(stop_block_hash.clone()) {
+                    Ok(Some(header)) => header.number(),
+                    _ => 0 as BlockNumber,
+                };
                 let mut filtered_last_block_num :BlockNumber = 0;
                 
                 //let block_hashes: Vec<Byte32>= Vec::new();
@@ -333,6 +352,7 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for SyncProtocol<S> {
                     .collect::<Vec<_>>();
                 let mut block_hashes = Vec::new();
                 for block_number in (start_block_num..=stop_block_num).take(MAX_HEADERS_LEN) {
+                info!("MATCH_AND_GET_BLOCKS --- the start num is {}, stop num is {}", start_block_num, stop_block_num);
                     let block_hash = self.store.get_block_hash(block_number.clone())
                         .expect("store should be ok")
                         .expect("stored block hash");
@@ -340,16 +360,19 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for SyncProtocol<S> {
                         .expect("store should be ok")
                         .expect("stored gcs filter");
                     let mut input = Cursor::new(filter.as_slice());
-                    if true == self.filter_reader
-                        .match_any(&mut input, &mut scripts.iter().map(|script| script.as_slice()))
-                        .unwrap(){
-                        if count < INIT_BLOCKS_IN_TRANSIT_PER_PEER {
-                            count += 1;
-                            block_hashes.push(block_hash);
-                        }else{
-                            filtered_last_block_num = block_number.clone();
-                            break;
-                        }
+                    let result = self.filter_reader
+                        .match_any(&mut input, &mut scripts.iter().map(|script| script.as_slice()));
+                    match result {
+                        Ok(true)=> {
+                            if count < INIT_BLOCKS_IN_TRANSIT_PER_PEER {
+                                count += 1;
+                                block_hashes.push(block_hash);
+                            }else{
+                                filtered_last_block_num = block_number.clone();
+                                break;
+                            }
+                        },
+                        _ => { break;}
                     }
                     filtered_last_block_num = block_number.clone();
                 }

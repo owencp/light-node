@@ -47,6 +47,10 @@ impl Peers{
         self._peers.write().insert(peer, state);
     }
 
+    pub fn is_peer_exsit(&self, peer:PeerIndex)->bool {
+        self._peers.read().contains_key(&peer)
+    }
+
     pub fn remove_peer(&mut self, peer:PeerIndex){
         self._peers.write().remove(&peer);
     }
