@@ -297,10 +297,14 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                                 .expect("stored should be OK")
                                 .expect("store head").number();
                             //get stop hash from filterhashes
+                            /* temp delete
                             let stop_hash = self
                                 .filter_hashes.read()
                                 .get(&peer).unwrap()
                                 .stop_hash();
+                            */
+                            //temp, remove later
+                            if let Some(stop_hash) = self.store.get_block_hash(200 as BlockNumber).expect("store hash"){
                             start_block_num = start_block_num + 1;
                             let stop_block_num = self.store.get_header(stop_hash.clone())
                                 .expect("stored should be OK")
@@ -317,6 +321,7 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                             
                             if let Err(err) = nc.send_message_to(peer.clone(), message.as_bytes()){
                                 debug!("GcsFilterProtocol send peer {} GetGcsFilters error: {:?}", err, peer);
+                            }
                             }
                         }
                         _ => unreachable!(),
