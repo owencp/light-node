@@ -134,6 +134,7 @@ impl<S: Store + Send + Sync> FilterProtocol<S> {
                 return;
             }
         }
+info!("insert_hashes parent_num is {}, stop_num is {}, len is {}", parent_num, stop_num, hash_len);
         //check parent_hash
         if stop_num >= parent_num && (stop_num - parent_num) as usize == hash_len  {
             
@@ -242,7 +243,7 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                             //get the last filter info 
                             let start_block_hash = self.store.get_lastest_hash()
                                 .expect("store should be OK")
-                                .expect("filter hashes stored");
+                                .expect("filter record stored");
                             let mut start_block_num = self.store.get_header(start_block_hash)
                                 .expect("stored should be OK")
                                 .expect("get header stored")
@@ -251,6 +252,16 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                             start_block_num = start_block_num + 1;
                             let stop_hash = self.check_points.read()
                                 .get(&peer).unwrap().stop_hash.clone();
+                            //check start_num and stop_num
+                            let stop_number = self.store.get_header(stop_hash.clone())
+                                .expect("stored should be OK")
+                                .expect("get header stored")
+                                .number();
+                            if start_block_num >= stop_number {
+                                self.check_points.write().clear();
+                                self.inner_sender.send(GcsMessage::GetCheckPoint).unwrap();
+                                return;
+                            }
                             let message = packed::GcsFilterMessage::new_builder()
                                 .set(
                                     packed::GetGcsFilterHashes::new_builder()
@@ -297,14 +308,10 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                                 .expect("stored should be OK")
                                 .expect("store head").number();
                             //get stop hash from filterhashes
-                            /* temp delete
                             let stop_hash = self
                                 .filter_hashes.read()
                                 .get(&peer).unwrap()
                                 .stop_hash();
-                            */
-                            //temp, remove later
-                            if let Some(stop_hash) = self.store.get_block_hash(200 as BlockNumber).expect("store hash"){
                             start_block_num = start_block_num + 1;
                             let stop_block_num = self.store.get_header(stop_hash.clone())
                                 .expect("stored should be OK")
@@ -321,7 +328,6 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                             
                             if let Err(err) = nc.send_message_to(peer.clone(), message.as_bytes()){
                                 debug!("GcsFilterProtocol send peer {} GetGcsFilters error: {:?}", err, peer);
-                            }
                             }
                         }
                         _ => unreachable!(),
@@ -409,7 +415,6 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                 let filter:Bytes = gcs_filter.filter().unpack();
                 let filter_hash = blake2b_256(filter).pack();
                 
-                //info!("received filter block num is {}, filter hash is {}", block_num, filter_hash ); 
                 /*
                 get the stop num from filter_hashes, and get the index of filter_hash,
                 then compare it to hash of this filter
@@ -442,6 +447,7 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
                 }
                 //
                 if stop_num == block_num {
+                    self.filter_hashes.write().clear();
                     self.inner_sender.send(GcsMessage::GetCheckPoint).unwrap();   
                 }
             }
