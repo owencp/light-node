@@ -96,11 +96,6 @@ impl<S: Store + Send + Sync> SyncProtocol<S> {
         let peers_num = peers.len();
         let peer_datas_num = self.peer_headers.read().len();
         if peer_datas_num >= peers_num {
-            /*
-            let _sender = self.sender.clone();
-            //send ProcessHeaderMsg to channel
-            _sender.send(SendMessage::ProcessHeaderMsg).unwrap();
-            */
             let num = self.check_and_insert_headers();
             self.peer_headers.write().clear();
             //send get header
@@ -249,6 +244,7 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for SyncProtocol<S> {
             packed::SyncMessageUnionReader::SendBlock(reader) => {
                 let block = reader.block().to_entity().into_view();
                 //insert block
+                info!("received filtered block: num is {}, hash is {:?}", block.number(), block.hash());
                 self.store.insert_filtered_block(block).expect("store block should be OK");
             }
             _ => {
@@ -275,7 +271,7 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for SyncProtocol<S> {
                             let now = Instant::now();
                             let duration = Duration::from_secs(15);
                             let mut peers:Vec<PeerIndex> = Vec::new();
-                            
+
                             for (_peer, state) in self.peers.get_peers().read().iter(){
                                 if state.state() == true {
                                     if num < MAX_HEADERS_LEN {
@@ -302,9 +298,7 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for SyncProtocol<S> {
                 }
             }
             RECOVER_PEER_STATE_TOKEN => {
-                for (key,_) in self.peers.get_peers().read().iter() {
-                    self.peers.change_peer_state(*key, true);
-                }
+                self.peers.refresh_peer_state();
             }
             MATCH_AND_GET_BLOCKS => {
                 
@@ -320,15 +314,6 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for SyncProtocol<S> {
                 
                 let start_block_num = scripts[0] + 1;
                 let mut count :usize = 0;
-                /*
-                //get the lastest block num from Script store as the start block
-                let start_block_num: BlockNumber = match self.store.get_lastest_block_num() {
-                    Ok(Some(num)) => num + 1,
-                    _ => {
-                        return;
-                    }
-                };
-                */
                 
                 //get the lastest block from filters store
                 let  stop_block_hash: packed::Byte32 = match self.store.get_lastest_hash() {
@@ -340,26 +325,29 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for SyncProtocol<S> {
                     Ok(Some(header)) => header.number(),
                     _ => 0 as BlockNumber,
                 };
+                if start_block_num >= stop_block_num {
+                    return;
+                }
                 let mut filtered_last_block_num :BlockNumber = 0;
                 
-                //let block_hashes: Vec<Byte32>= Vec::new();
                 //get all Scripts
                 let scripts = self.store
                     .get_scripts()
                     .expect("store script")
                     .into_iter()
-                    .map(|(script, _block_number)| script)
+                    .map(|(script, _block_number)| script.calc_script_hash())
                     .collect::<Vec<_>>();
                 let mut block_hashes = Vec::new();
                 for block_number in (start_block_num..=stop_block_num).take(MAX_HEADERS_LEN) {
-                info!("MATCH_AND_GET_BLOCKS --- the start num is {}, stop num is {}", start_block_num, stop_block_num);
                     let block_hash = self.store.get_block_hash(block_number.clone())
                         .expect("store should be ok")
                         .expect("stored block hash");
                     let filter = self.store.get_gcsfilter(block_hash.clone())
                         .expect("store should be ok")
-                        .expect("stored gcs filter");
-                    let mut input = Cursor::new(filter.as_slice());
+                        .expect("stored gcs filter")
+                        .raw_data().to_vec();
+
+                    let mut input = Cursor::new(filter);
                     let result = self.filter_reader
                         .match_any(&mut input, &mut scripts.iter().map(|script| script.as_slice()));
                     match result {
@@ -372,10 +360,12 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for SyncProtocol<S> {
                                 break;
                             }
                         },
-                        _ => { break;}
+                        _ => {/**/},
                     }
                     filtered_last_block_num = block_number.clone();
                 }
+
+                
                 //new message
                 let content = packed::GetBlocks::new_builder()
                     .block_hashes(block_hashes.pack())
@@ -395,17 +385,17 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for SyncProtocol<S> {
                         }
                     }).collect();
 
-                    peers
-                        .into_iter()
-                        .for_each(|peer| {
-                            if let Ok(_) = nc.send_message_to(peer, message.as_bytes()) {
-                                return;
+                peers
+                    .into_iter()
+                    .for_each(|peer| {
+                        if let Ok(_) = nc.send_message_to(peer, message.as_bytes()) {
+                            //update filtered blocknumber
+                            if filtered_last_block_num > 0 {
+                                self.store.update_scripts(filtered_last_block_num).expect("update scripts should be OK");
                             }
-                        });
-                //update filtered blocknumber 
-                if filtered_last_block_num > 0 {
-                    self.store.update_scripts(filtered_last_block_num).expect("update scripts should be OK");
-                }
+                            return;
+                        }
+                    });
             }
             _ => unreachable!(),
         }
