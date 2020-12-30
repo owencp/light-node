@@ -248,7 +248,6 @@ impl<S: Store> ChainStore<S> {
 
     //Gcs filter
     pub fn insert_gcsfilter(&self, filter: packed::GcsFilter)->Result<(), Error> {
-        println!("insert gcs filter =========== {}", filter.block_hash());
         let mut batch = self.store.batch()?;
         batch.put_kv(
             Key::GcsFilter(filter.block_hash()),
@@ -568,6 +567,8 @@ impl<S: Store> ChainStore<S> {
             .collect::<Vec<_>>();
         if scripts.len() != 0 {
             block_number = scripts[0];
+        }else{
+            block_number = self.tip()?.expect("stored tip").number();
         }
         let mut batch = self.store.batch()?;
         batch.put_kv(Key::Script(script), Value::Script(block_number))?;

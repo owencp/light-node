@@ -137,6 +137,7 @@ fn init(
             sync_protocol,
             Arc::clone(&network_state),
         ),
+
         CKBProtocol::new_with_support_protocol(
             SupportProtocols::GcsFilter,
             filter_protocol,
@@ -144,10 +145,6 @@ fn init(
         ),
     ];
     let (async_handle, async_stop_handle) = new_global_runtime();
-    /*
-    let mut thread_builder = thread::Builder::new();
-    thread_builder = thread_builder.name("NetworkService".to_string());
-    */
     let _network_controller = NetworkService::new(
         Arc::clone(&network_state),
         protocols,

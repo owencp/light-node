@@ -66,6 +66,12 @@ impl Peers{
             .get_mut(&peer)
             .unwrap().state = state;
     }
+    
+    pub fn refresh_peer_state(&mut self) {
+        for value in self._peers.write().values_mut() {
+            value.state = true;
+        }
+    }
     pub fn get_send_time(&self, peer:PeerIndex) -> Instant {
         match self._peers.read().get(&peer) {
             Some(state) => state.send_time,
