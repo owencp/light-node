@@ -29,6 +29,9 @@ use std::net::ToSocketAddrs;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
+const ANYONE_CAN_PAY: H256 =
+    h256!("0xd369597ff47f29fbc0d47d2e3775370d1250b85140c670e4718af712983a2354");
+
 pub struct RpcService<S> {
     chain_store: ChainStore<S>,
     sender: Sender<ControlMessage>,
@@ -76,15 +79,23 @@ impl<S: Store + Send + Sync + 'static> RpcService<S> {
                             blake2b_256(private_key.pubkey().unwrap().serialize())[..20].to_vec();
                         if !scripts
                             .iter()
-                            .any(|(script, _)| args == script.args().raw_data())
+                            .any(|(script, _, _)| args == script.args().raw_data())
                         {
                             let script = packed::Script::new_builder()
                                 .code_hash(SECP256K1_BLAKE160_SIGHASH_ALL_TYPE_HASH.pack())
-                                .args(Bytes::from(args).pack())
+                                .args(Bytes::from(args.clone()).pack())
                                 .hash_type(ScriptHashType::Type.into())
                                 .build();
-                            
-                            chain_store.insert_script(script).unwrap();
+
+                            let anyone_can_pay_script = packed::Script::new_builder()
+                                .args(args.pack())
+                                .code_hash(ANYONE_CAN_PAY.pack())
+                                .hash_type(ScriptHashType::Data.into())
+                                .build();
+
+                            chain_store
+                                .insert_script(script, anyone_can_pay_script)
+                                .unwrap();
                         }
                         private_key
                     })
@@ -149,9 +160,9 @@ const DEFAULT_FEE_RATE: usize = 1;
 pub trait Rpc {
     #[rpc(name = "get_cells")]
     fn get_cells(&self, script: Script) -> Result<Vec<Cell>>;
-    
+
     #[rpc(name = "send_transaction")]
-    fn send_transaction(&self, transaction: Transaction) -> Result<H256>;    
+    fn send_transaction(&self, transaction: Transaction) -> Result<H256>;
 
     #[rpc(name = "generate_account")]
     fn generate_account(&self) -> Result<()>;
@@ -233,14 +244,22 @@ impl<S: Store + Send + Sync + 'static> Rpc for RpcImpl<S> {
                     .open(&self.private_keys_store_path)
                     .unwrap();
                 file.write_all(&raw).unwrap();
-
+                let args = Bytes::from(blake2b_256(pubkey.serialize())[..20].to_vec());
                 let script = packed::Script::new_builder()
                     .code_hash(SECP256K1_BLAKE160_SIGHASH_ALL_TYPE_HASH.pack())
-                    .args(Bytes::from(blake2b_256(pubkey.serialize())[..20].to_vec()).pack())
+                    .args(args.clone().pack())
                     .hash_type(ScriptHashType::Type.into())
                     .build();
 
-                self.chain_store.insert_script(script).unwrap();
+                let anyone_can_pay_script = packed::Script::new_builder()
+                    .args(args.pack())
+                    .code_hash(ANYONE_CAN_PAY.pack())
+                    .hash_type(ScriptHashType::Data.into())
+                    .build();
+
+                self.chain_store
+                    .insert_script(script, anyone_can_pay_script)
+                    .unwrap();
                 return Ok(());
             }
         }
@@ -248,7 +267,8 @@ impl<S: Store + Send + Sync + 'static> Rpc for RpcImpl<S> {
 
     fn accounts(&self) -> Result<Vec<Account>> {
         let mut result = Vec::new();
-        for (script, block_number) in self.chain_store.get_scripts().unwrap() {
+        for (script, anyone_can_pay_script, block_number) in self.chain_store.get_scripts().unwrap()
+        {
             let address = script_to_address(&script, &self.consensus.id);
             let total_capacity = self
                 .chain_store
@@ -277,7 +297,7 @@ impl<S: Store + Send + Sync + 'static> Rpc for RpcImpl<S> {
     fn account_transactions(&self) -> Result<Vec<AccountTransaction>> {
         let mut account_changes: HashMap<_, i64> = HashMap::new();
 
-        for (script, _) in self.chain_store.get_scripts().unwrap() {
+        for (script, _, _) in self.chain_store.get_scripts().unwrap() {
             for (
                 out_point,
                 cell_output,
