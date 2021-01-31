@@ -511,64 +511,7 @@ impl<S: Store> ChainStore<S> {
                 })
             })
     }
-    /*
-    fn rollback_filtered_block(
-        &self,
-        block_number: BlockNumber,
-        block_hash: packed::Byte32,
-    ) -> Result<(), Error> {
-        let mut batch = self.store.batch()?;
-        if let Some(matched) = self
-            .store
-            .get(&Key::FilteredBlock(block_number, block_hash.clone()).into_vec())
-            .map(|value| {
-                value.map(|raw| {
-                    raw.chunks_exact(37)
-                        .map(|s| {
-                            (
-                                packed::Byte32::from_slice(&s[0..32])
-                                    .expect("stored FilteredBlock value: tx_hash"),
-                                IOIndex::from_be_bytes(
-                                    s[32..36]
-                                        .try_into()
-                                        .expect("stored FilteredBlock value: index"),
-                                ),
-                                if s[36] == 0 {
-                                    IOType::Input
-                                } else {
-                                    IOType::Output
-                                },
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                })
-            })?
-        {
-            for (tx_hash, io_index, io_type) in matched.into_iter().rev() {
-                let out_point = packed::OutPoint::new(tx_hash, io_index);
-                match io_type {
-                    IOType::Input => {
-                        if let Some((output, output_data, created_by_block_number)) =
-                            self.get_consumed_out_point(out_point.clone())?
-                        {
-                            batch.delete(Key::ConsumedOutPoint(out_point.clone()).into_vec())?;
-                            batch.put_kv(
-                                Key::OutPoint(out_point),
-                                Value::OutPoint(output, output_data, created_by_block_number),
-                            )?;
-                        }
-                    }
-                    IOType::Output => {
-                        batch.delete(Key::OutPoint(out_point).into_vec())?;
-                    }
-                }
-            }
-            batch.delete(Key::FilteredBlock(block_number, block_hash).into_vec())?;
-        }
 
-        batch.commit()
-    }
-    */
     pub fn insert_script(
         &self,
         script: packed::Script,
@@ -580,7 +523,7 @@ impl<S: Store> ChainStore<S> {
             .get_scripts()
             .expect("store script")
             .into_iter()
-            .map(|(_script, anyone_can_pay_script, block_number)| block_number)
+            .map(|(_, _, block_number)| block_number)
             .collect::<Vec<_>>();
         if scripts.len() != 0 {
             block_number = scripts[0];
@@ -668,12 +611,16 @@ impl<S: Store> ChainStore<S> {
                         ) as usize;
                         let output = packed::CellOutput::from_slice(&value[..output_size])
                             .expect("stored OutPoint value: output");
-                        let Some(anyone_can_pay_script) = self
-                            .get_anyone_can_pay_script(script.to_owned())
-                            .expect("stored script");
                         if script.eq(&output.lock())
                             || (if let Some(type_script) = &output.type_().to_opt() {
-                                anyone_can_pay_script.eq(type_script)
+                                if let Some(anyone_can_pay_script) = self
+                                    .get_anyone_can_pay_script(script.clone())
+                                    .expect("script soter")
+                                {
+                                    anyone_can_pay_script.eq(type_script)
+                                } else {
+                                    false
+                                }
                             } else {
                                 false
                             })
@@ -728,15 +675,19 @@ impl<S: Store> ChainStore<S> {
                     ) as usize;
                     let output = packed::CellOutput::from_slice(&value[..output_size])
                         .expect("stored ConsumedOutPoint value: output");
-                    let Some(anyone_can_pay_script) = self
-                              .get_anyone_can_pay_script(script.to_owned())
-                              .expect("stored script");
                     if script.eq(&output.lock())
                         || (if let Some(type_script) = &output.type_().to_opt() {
-                            anyone_can_pay_script.eq(type_script)
+                            if let Some(anyone_can_pay_script) = self
+                                .get_anyone_can_pay_script(script.clone())
+                                .expect("script soter")
+                            {
+                                anyone_can_pay_script.eq(type_script)
                             } else {
                                 false
-                            })
+                            }
+                        } else {
+                            false
+                        })
                     {
                         let out_point = packed::OutPoint::from_slice(&key[1..])
                             .expect("stored ConsumedOutPoint key");
