@@ -337,8 +337,8 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for SyncProtocol<S> {
                 }
                 let mut filtered_last_block_num: BlockNumber = 0;
 
-                //get all Scripts
-                let (normal_scripts, anyone_can_pay_script): (
+                //get all Scripts: normal script, anyone_can_pay script
+                let (normal_scripts, anyone_can_pay_scripts): (
                     Vec<packed::Byte32>,
                     Vec<packed::Byte32>,
                 ) = self
@@ -355,7 +355,7 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for SyncProtocol<S> {
                     .unzip();
                 let scripts = normal_scripts
                     .iter()
-                    .chain(anyone_can_pay_script.iter())
+                    .chain(anyone_can_pay_scripts.iter())
                     .collect::<Vec<_>>();
                 let mut block_hashes = Vec::new();
                 for block_number in (start_block_num..=stop_block_num).take(MAX_HEADERS_LEN) {
@@ -387,7 +387,9 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for SyncProtocol<S> {
                                 break;
                             }
                         }
-                        _ => { /**/ }
+                        _ => {
+                            //
+                        }
                     }
                     filtered_last_block_num = block_number.clone();
                 }

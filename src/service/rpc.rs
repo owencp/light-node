@@ -141,6 +141,7 @@ pub struct Cell {
 pub struct Account {
     address: String,
     balance: JsonCapacity,
+    balance_ex: HashMap<String, u128>,
     indexed_block_number: BlockNumber,
 }
 
@@ -270,6 +271,7 @@ impl<S: Store + Send + Sync + 'static> Rpc for RpcImpl<S> {
         for (script, anyone_can_pay_script, block_number) in self.chain_store.get_scripts().unwrap()
         {
             let address = script_to_address(&script, &self.consensus.id);
+            let mut sudt_capacity: HashMap<String, u128> = HashMap::new();
             let total_capacity = self
                 .chain_store
                 .get_cells(&script.into())
@@ -278,6 +280,21 @@ impl<S: Store + Send + Sync + 'static> Rpc for RpcImpl<S> {
                 .map(
                     |(_out_point, output, _output_data, _created_by_block_number)| {
                         let capacity: Capacity = output.capacity().unpack();
+                        //parse sudt capacity
+                        if let Some(type_script) = output.type_().to_opt() {
+                            //get code_hash
+                            let code_hash: packed::Byte32 = type_script.code_hash();
+                            let mut data = [0u8; 16];
+                            data.copy_from_slice(&_output_data.raw_data()[..16]);
+
+                            if let Some(x) = sudt_capacity.get_mut(&code_hash.to_string()) {
+                                //add capacity
+                                x.saturating_add(u128::from_le_bytes(data));
+                            } else {
+                                sudt_capacity
+                                    .insert(code_hash.to_string(), u128::from_le_bytes(data));
+                            }
+                        }
                         capacity
                     },
                 )
@@ -287,6 +304,7 @@ impl<S: Store + Send + Sync + 'static> Rpc for RpcImpl<S> {
             result.push(Account {
                 address,
                 balance: total_capacity.into(),
+                balance_ex: sudt_capacity,
                 indexed_block_number: block_number.into(),
             });
         }
@@ -367,7 +385,7 @@ impl<S: Store + Send + Sync + 'static> Rpc for RpcImpl<S> {
             data: None,
         })?;
 
-        if let Some((from_script, _)) = self
+        if let Some((from_script, _, _)) = self
             .chain_store
             .get_scripts()
             .unwrap()
