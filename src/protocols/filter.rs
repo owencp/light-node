@@ -572,3 +572,182 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
         self.peers.remove_peer(_peer);
     }
 }
+
+#[cfg(test)]
+  mod tests {
+      use super::*;
+      use ckb_network::{CKBProtocol, NetworkService, NetworkState, SupportProtocols};
+      use ckb_test_chain_utils::{always_success_cell, load_input_data_hash_cell};
+      use ckb_types::{
+          bytes::Bytes,
+          core::{
+              capacity_bytes, BlockBuilder, BlockNumber, Capacity, EpochNumberWithFraction,
+              ScriptHashType, TransactionBuilder, TransactionView,
+          },
+          packed::{Byte32, CellInput, CellOutput, OutPoint, Script},
+      };
+
+      use ckb_test::{util::mining::mine, Net, Node, Spec};
+
+      pub struct TestCheckpoints;
+      impl Spec for TestCheckpoints {
+          fn run(&self, nodes: &mut Vec<Node>) {
+              info!("Run test checkpoint message");
+              info!("Connect node0");
+              let node0 = &nodes[0];
+              let mut net = Net::new(
+                  self.name(),
+                  node0.consensus(),
+                  vec![SupportProtocols::Sync, SupportProtocols::GcsFilter],
+              );
+              mine(node0, 7);
+              net.connect(node0);
+              let tip_block = node0.get_tip_block();
+              let last_block_hash = tip_block.hash();
+
+              info!("Test node should receive GetCheckPoint message from node0");
+              let ret = net.should_receive(node0, |data: &Bytes| {
+                  packed::GcsFilterMessage::from_slice(&data)
+                      .map(|message| {
+                          if let packed::GcsFilterMessageUnion::GcsFilterCheckPoint(check_point) =
+                              message.to_enum()
+                          {
+                              (check_point.stop_hash() == last_block_hash) && (check_point.filter_hashes().len() == 5)
+                          } else {
+                              false
+                          }
+                      })
+                      .unwrap_or(false)
+              });
+              assert!(
+                  ret,
+                  "Test node should receive GetGcsFilterCheckPoint message from node0"
+              );
+              net.send(
+                  node0,
+                  SupportProtocols::GcsFilter,
+                  packed::GcsFilterMessage::new_builder()
+                      .set(
+                          packed::GetGcsFilterCheckPoint::new_builder()
+                              .stop_hash(last_block_hash.clone())
+                              .interval((2 as u32).pack())
+                              .build(),
+                      )
+                      .build()
+                      .as_bytes(),
+              );
+          }
+      }
+
+      pub struct TestGetFilterHash;
+      impl Spec for TestGetFilterHash {
+          fn run(&self, nodes: &mut Vec<Node>) {
+              info!("Run test getfilterhash message");
+              info!("Connect node0");
+              let node0 = &nodes[0];
+              let mut net = Net::new(
+                  self.name(),
+                  node0.consensus(),
+                  vec![SupportProtocols::Sync, SupportProtocols::GcsFilter],
+              );
+              mine(node0, 7);
+              net.connect(node0);
+              let tip_block = node0.get_tip_block();
+              let last_block_hash = tip_block.hash();
+
+              info!("Test node should receive GetFilterHashes message from node0");
+              let ret = net.should_receive(node0, |data: &Bytes| {
+                  packed::GcsFilterMessage::from_slice(&data)
+                      .map(|message| {
+                          if let packed::GcsFilterMessageUnion::GcsFilterHashes(filter_hashes) =
+                              message.to_enum()
+                          {
+                              (filter_hashes.stop_hash() == last_block_hash)
+                              && (filter_hashes.parent_hash() == node0.consensus().genesis_hash())
+                          } else {
+                              false
+                          }
+                      })
+                      .unwrap_or(false)
+              });
+              assert!(
+                  ret,
+                  "Test node should receive GetGcsFilterHashes message from node0"
+              );
+              net.send(
+                  node0,
+                  SupportProtocols::GcsFilter,
+                  packed::GcsFilterMessage::new_builder()
+                      .set(
+                          packed::GetGcsFilterHashes::new_builder()
+                              .start_number((1 as u64).pack())
+                              .stop_hash(last_block_hash.clone())
+                              .build(),
+                      )
+                      .build()
+                      .as_bytes(),
+              );
+          }
+      }
+
+      pub struct TestGetFilters;
+      impl Spec for TestGetFilters {
+          fn run(&self, nodes: &mut Vec<Node>) {
+              info!("Run test getfilters message");
+              info!("Connect node0");
+              let node0 = &nodes[0];
+              let mut net = Net::new(
+                  self.name(),
+                  node0.consensus(),
+                  vec![SupportProtocols::Sync, SupportProtocols::GcsFilter],
+              );
+              mine(node0, 1);
+              net.connect(node0);
+              let tip_block = node0.get_tip_block();
+              let last_block_hash = tip_block.hash();
+
+              info!("Test node should receive GetFilterHashes message from node0");
+              let ret = net.should_receive(node0, |data: &Bytes| {
+                  packed::GcsFilterMessage::from_slice(&data)
+                      .map(|message| {
+                          if let packed::GcsFilterMessageUnion::GcsFilter(filter) =
+                              message.to_enum()
+                          {
+                              filter.block_hash() == last_block_hash
+                          } else {
+                              false
+                          }
+                      })
+                      .unwrap_or(false)
+              });
+              assert!(
+                  ret,
+                  "Test node should receive GetGcsFilter message from node0"
+              );
+
+              net.send(
+                  node0,
+                  SupportProtocols::GcsFilter,
+                  packed::GcsFilterMessage::new_builder()
+                      .set(
+                          packed::GetGcsFilters::new_builder()
+                              .start_number((1 as u64).pack())
+                              .stop_hash(last_block_hash.clone())
+                              .build(),
+                      )
+                      .build()
+                      .as_bytes(),
+              );
+          }
+      }
+      /*
+      需要跑集成测试，一些环境配置需要集成测试完成
+      #[test]
+      pub fn test_check_point(){
+          let test_ckpoint = Box::new(TestGetFilterHash);
+          let mut nodes = test_ckpoint.before_run();
+          test_ckpoint.run(&mut nodes);
+      }
+      */
+  }
+

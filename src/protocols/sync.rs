@@ -430,3 +430,71 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for SyncProtocol<S> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ckb_test_chain_utils::{always_success_cell, load_input_data_hash_cell};
+    use ckb_types::{
+        bytes::Bytes,
+        core::{
+            BlockBuilder, BlockNumber, Capacity, EpochNumberWithFraction, ScriptHashType,
+            TransactionBuilder, TransactionView, capacity_bytes,
+        },
+        packed::{CellInput, CellOutput, OutPoint, Script, Byte32},
+    };
+    use std::io::Cursor;
+
+    fn build_gcs_filter(out: &mut dyn std::io::Write) -> golomb_coded_set::GCSFilterWriter {
+        // use same value as bip158
+        let p = 19;
+        let m = 1.497_137 * f64::from(2u32.pow(p));
+        golomb_coded_set::GCSFilterWriter::new(out, 0, 0, m as u64, p as u8)
+    }
+
+    fn create_always_success_tx() -> TransactionView {
+        let (ref always_success_cell, ref always_success_cell_data, ref script) =
+            always_success_cell();
+        TransactionBuilder::default()
+            .witness(script.clone().into_witness())
+            .input(CellInput::new(OutPoint::null(), 0))
+            .output(
+                CellOutput::new_builder()
+                        .capacity(capacity_bytes!(50_000).pack())
+                        .lock(script.clone())
+                        .build(),
+            )
+            .build()
+    }
+    #[test]
+    fn test_match_block() {
+        let tx = create_always_success_tx();
+        let mut filter_writer = Cursor::new(Vec::new());
+        let mut filter = build_gcs_filter(&mut filter_writer);
+        let (_, _, script) = always_success_cell();
+        let filter_reader = build_gcs_filter_reader();
+        //generate filter
+        for output in tx.outputs() {
+            filter.add_element(output.calc_lock_hash().as_slice());
+            if let Some(type_script) = output.type_().to_opt() {
+                filter.add_element(type_script.calc_script_hash().as_slice());
+            }
+        }
+        filter
+            .finish()
+            .expect("flush to memry");
+        //
+        let mut scripts: Vec<Byte32> = Vec::new();
+        scripts.push(script.clone().calc_script_hash());
+        let gcs_filter = filter_writer.into_inner().clone();
+        let mut input = Cursor::new(gcs_filter);
+        let result = filter_reader
+            .match_any(
+                &mut input,
+                &mut scripts.iter().map(|script| script.as_slice()),
+            )
+            .unwrap_or_default();
+
+        assert_eq!(Some(result), Some(true));
+    }
+}
