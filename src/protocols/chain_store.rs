@@ -1,3 +1,4 @@
+use super::GcsDataLoader;
 use crate::protocols::HeaderProvider;
 use crate::store::{Batch, Error, IteratorDirection, Store};
 use ckb_types::{
@@ -167,6 +168,7 @@ impl Into<Vec<u8>> for Value {
 #[derive(Clone)]
 pub struct ChainStore<S> {
     pub store: Arc<S>,
+    pub data_loader: GcsDataLoader,
 }
 
 impl<S: Store> ChainStore<S> {
@@ -391,7 +393,7 @@ impl<S: Store> ChainStore<S> {
         Ok(locator)
     }
 
-    pub fn insert_filtered_block(&self, block: BlockView) -> Result<(), Error> {
+    pub fn insert_filtered_block(&mut self, block: BlockView) -> Result<(), Error> {
         let scripts = self
             .get_scripts()?
             .into_iter()
@@ -425,6 +427,8 @@ impl<S: Store> ChainStore<S> {
                             ),
                         )?;
                         batch.delete(Key::OutPoint(input.previous_output()).into_vec())?;
+                        //update data_loader
+                        self.data_loader.delete_cell(&input.previous_output());
                     }
                 }
             }
@@ -438,15 +442,16 @@ impl<S: Store> ChainStore<S> {
                         })
                 }) {
                     let tx_hash = tx.hash();
+                    let out_point = packed::OutPoint::new(tx_hash.clone(), index as u32);
+                    let output_data = tx.outputs_data().get(index).expect("checked len");
                     matched.push((tx_hash.clone(), index as u32, IOType::Output));
                     batch.put_kv(
-                        Key::OutPoint(packed::OutPoint::new(tx_hash, index as u32)),
-                        Value::OutPoint(
-                            output,
-                            tx.outputs_data().get(index).expect("checked len"),
-                            block.number(),
-                        ),
+                        Key::OutPoint(out_point.clone()),
+                        Value::OutPoint(output.clone(), output_data.clone(), block.number()),
                     )?;
+                    //insert data_loader
+                    self.data_loader
+                        .insert_cell(&out_point, &output, &output_data.unpack());
                 }
             }
         }

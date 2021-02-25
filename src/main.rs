@@ -3,7 +3,7 @@ pub mod protocols;
 pub mod service;
 pub mod store;
 use crate::store::{SledStore, Store};
-use crate::protocols::{ChainStore, FilterProtocol, SyncProtocol,Peers};
+use crate::protocols::{ChainStore, FilterProtocol, SyncProtocol,Peers, GcsDataLoader};
 use crate::service::RpcService;
 use ckb_logger::info;
 use ckb_logger_config::Config as LogConfig;
@@ -88,7 +88,8 @@ fn init(
 ) {
     let sleddb = Arc::new(SledStore::new(config.path.to_str().unwrap()));
     info!("store statistics: {:?}", sleddb.statistics().unwrap());
-    let store = ChainStore { store: sleddb };
+    let data_loader = GcsDataLoader::new();
+    let store = ChainStore { store: sleddb, data_loader};
 
     let resource = ckb_resource::Resource::bundled(format!("specs/{}.toml", chain));
     let spec = ckb_chain_spec::ChainSpec::load_from(&resource).expect("load spec by name");

@@ -1,4 +1,4 @@
-use crate::protocols::{ChainStore, ControlMessage};
+use crate::protocols::{build_resolved_tx, ChainStore, ControlMessage};
 use crate::store::Store;
 use bech32::{convert_bits, Bech32, ToBase32};
 use ckb_chain_spec::consensus::Consensus;
@@ -9,7 +9,7 @@ use ckb_jsonrpc_types::{
 };
 use ckb_types::{
     bytes::Bytes,
-    core::{Capacity, DepType, ScriptHashType, TransactionBuilder},
+    core::{Capacity, DepType, ScriptHashType, TransactionBuilder, TransactionView},
     h256, packed,
     prelude::*,
     H256,
@@ -38,6 +38,7 @@ pub struct RpcService<S> {
     listen_address: String,
     private_keys_store_path: String,
     consensus: Consensus,
+    pending_txs: Arc<RwLock<HashMap<packed::Byte32, TransactionView>>>,
 }
 
 impl<S: Store + Send + Sync + 'static> RpcService<S> {
@@ -54,6 +55,7 @@ impl<S: Store + Send + Sync + 'static> RpcService<S> {
             listen_address: listen_address.to_owned(),
             private_keys_store_path: private_keys_store_path.to_owned(),
             consensus: consensus.clone(),
+            pending_txs: Arc::new(RwLock::new(HashMap::default())),
         }
     }
 
@@ -65,6 +67,7 @@ impl<S: Store + Send + Sync + 'static> RpcService<S> {
             listen_address,
             private_keys_store_path,
             consensus,
+            pending_txs,
         } = self;
 
         let scripts = chain_store.get_scripts().unwrap();
@@ -467,6 +470,12 @@ impl<S: Store + Send + Sync + 'static> Rpc for RpcImpl<S> {
                             .set_outputs(vec![to_address_output.clone(), change_address_output]);
                         let unsigned_tx = unsigned_tx_builder.clone().build();
                         let tx_hash = unsigned_tx.hash();
+                        //build_resolved_tx
+                        let resolved_tx = build_resolved_tx(
+                            self.chain_store.data_loader.clone(),
+                            unsigned_tx.clone(),
+                        );
+                        //
 
                         let witness_len = witness_placeholder.as_slice().len() as u64;
                         let message = {
@@ -479,21 +488,6 @@ impl<S: Store + Send + Sync + 'static> Rpc for RpcImpl<S> {
                             H256::from(buf)
                         };
 
-                        // this demo use a dirty and insecure fn to find the corresponding private key and sign the message
-                        /*
-                        let private_key = self
-                            .private_keys
-                            .read()
-                            .unwrap()
-                            .iter()
-                            .find(|private_key| {
-                                blake2b_256(private_key.pubkey().unwrap().serialize())[..20]
-                                    .to_vec()
-                                    == from_script.args().raw_data()
-                            })
-                            .cloned()
-                            .unwrap();
-                        */
                         if let Some(private_key) =
                             self.private_keys.read().unwrap().get(from_script)
                         {
