@@ -38,7 +38,8 @@ pub struct RpcService<S> {
     listen_address: String,
     private_keys_store_path: String,
     consensus: Consensus,
-    pending_txs: Arc<RwLock<HashMap<packed::Byte32, TransactionView>>>,
+    pending_txs_map: Arc<RwLock<HashMap<packed::Byte32, TransactionView>>>,
+    pending_txs: Arc<RwLock<Vec<packed::Byte32>>>,
 }
 
 impl<S: Store + Send + Sync + 'static> RpcService<S> {
@@ -55,7 +56,8 @@ impl<S: Store + Send + Sync + 'static> RpcService<S> {
             listen_address: listen_address.to_owned(),
             private_keys_store_path: private_keys_store_path.to_owned(),
             consensus: consensus.clone(),
-            pending_txs: Arc::new(RwLock::new(HashMap::default())),
+            pending_txs_map: Arc::new(RwLock::new(HashMap::default())),
+            pending_txs: Arc::new(RwLock::new(Vec::default())),
         }
     }
 
@@ -67,6 +69,7 @@ impl<S: Store + Send + Sync + 'static> RpcService<S> {
             listen_address,
             private_keys_store_path,
             consensus,
+            pending_txs_map,
             pending_txs,
         } = self;
 
@@ -101,6 +104,9 @@ impl<S: Store + Send + Sync + 'static> RpcService<S> {
                 private_keys.insert(script, private_key);
             }
         }
+        //load cells
+        chain_store.load_all_active_cells();
+
         let rpc_impl = RpcImpl {
             chain_store,
             sender,

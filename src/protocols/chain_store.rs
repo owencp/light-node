@@ -727,6 +727,32 @@ impl<S: Store> ChainStore<S> {
                 .collect::<Vec<_>>()
             })
     }
+
+    //load all active cells
+    pub fn load_all_active_cells(&self) {
+        self.store
+            .iter(&[KeyPrefix::OutPoint as u8], IteratorDirection::Forward)
+            .map(|iter| {
+                iter.take_while(|(key, _value)| key.starts_with(&[KeyPrefix::OutPoint as u8]))
+                    .filter_map(|(key, value)| {
+                        let output_size = u32::from_le_bytes(
+                            value[..4]
+                                .try_into()
+                                .expect("stored OutPoint value: output_size"),
+                        ) as usize;
+                        let output = packed::CellOutput::from_slice(&value[..output_size])
+                            .expect("stored OutPoint value: output");
+
+                        let out_point =
+                            packed::OutPoint::from_slice(&key[1..]).expect("stored OutPoint key");
+                        let output_data =
+                            packed::Bytes::from_slice(&value[output_size..value.len() - 8])
+                                .expect("stored OutPoint value: output_data");
+                        Some((out_point, output, output_data))
+                    })
+                    .for_each(move |x| self.data_loader.insert_cell(&x.0, &x.1, &x.2.unpack()));
+            });
+    }
 }
 
 pub struct HeaderProviderWrapper<'a, S> {

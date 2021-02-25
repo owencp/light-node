@@ -41,14 +41,14 @@ impl GcsDataLoader {
         Self::default()
     }
 
-    pub fn insert_cell(&mut self, out_point: &OutPoint, output: &CellOutput, output_data: &Bytes) {
+    pub fn insert_cell(&self, out_point: &OutPoint, output: &CellOutput, output_data: &Bytes) {
         self.cells
             .write()
             .unwrap()
             .insert(out_point.clone(), (output.clone(), output_data.clone()));
     }
 
-    pub fn delete_cell(&mut self, out_point: &OutPoint) {
+    pub fn delete_cell(&self, out_point: &OutPoint) {
         self.cells.write().unwrap().remove(out_point);
     }
 }
