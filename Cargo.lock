@@ -2137,6 +2137,7 @@ dependencies = [
  "ckb-async-runtime",
  "ckb-chain-spec",
  "ckb-crypto",
+ "ckb-error",
  "ckb-hash",
  "ckb-jsonrpc-types",
  "ckb-logger",

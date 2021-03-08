@@ -2,12 +2,14 @@ pub mod chain_store;
 pub mod filter;
 pub mod header_verifier;
 pub mod peers;
+pub mod relay;
 pub mod sync;
 
 pub use self::chain_store::{ChainStore, HeaderProviderWrapper};
-pub use self::filter::{ControlMessage, FilterProtocol};
+pub use self::filter::FilterProtocol;
 pub use self::header_verifier::{HeaderProvider, HeaderVerifier};
 pub use self::peers::Peers;
+pub use self::relay::{ControlMessage, RelayProtocol};
 pub use self::sync::SyncProtocol;
 
 use ckb_script::TransactionScriptsVerifier;
@@ -15,8 +17,7 @@ use ckb_types::{
     bytes::Bytes,
     core::{
         cell::{CellMeta, CellMetaBuilder, ResolvedTransaction},
-        BlockExt, Capacity, DepType, EpochExt, HeaderView, ScriptHashType, TransactionBuilder,
-        TransactionView,
+        Cycle, HeaderView, ScriptHashType, TransactionBuilder, TransactionView,
     },
     packed::{
         self, Byte32, CellDep, CellInput, CellOutput, OutPoint, Script, WitnessArgs,
@@ -24,6 +25,8 @@ use ckb_types::{
     },
     prelude::*,
 };
+
+use ckb_error::Error;
 
 use ckb_traits::{CellDataProvider, HeaderProvider as ChainHeaderProvider};
 use std::collections::HashMap;
@@ -83,14 +86,13 @@ impl CellDataProvider for GcsDataLoader {
     }
     */
 }
-/*
+
 impl ChainHeaderProvider for GcsDataLoader {
     // load header
     fn get_header(&self, block_hash: &Byte32) -> Option<HeaderView> {
-        HeaderView::default();
+        None
     }
 }
-*/
 
 pub fn build_resolved_tx(data_loader: GcsDataLoader, tx: TransactionView) -> ResolvedTransaction {
     let resolved_cell_deps = tx
@@ -134,4 +136,13 @@ pub fn build_resolved_tx(data_loader: GcsDataLoader, tx: TransactionView) -> Res
         resolved_inputs,
         resolved_dep_groups: vec![],
     }
+}
+
+pub fn verify_and_get_cycles<'a, DL: CellDataProvider + ChainHeaderProvider>(
+    rtx: &'a ResolvedTransaction,
+    data_loader: &'a DL,
+) -> Result<Cycle, Error> {
+    let verifier = TransactionScriptsVerifier::new(rtx, data_loader);
+    //max_cycles ???
+    verifier.verify(600)
 }

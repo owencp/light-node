@@ -1,4 +1,6 @@
-use crate::protocols::{build_resolved_tx, ChainStore, ControlMessage};
+use crate::protocols::{
+    build_resolved_tx, relay::ControlMessage, verify_and_get_cycles, ChainStore,
+};
 use crate::store::Store;
 use bech32::{convert_bits, Bech32, ToBase32};
 use ckb_chain_spec::consensus::Consensus;
@@ -9,7 +11,7 @@ use ckb_jsonrpc_types::{
 };
 use ckb_types::{
     bytes::Bytes,
-    core::{Capacity, DepType, ScriptHashType, TransactionBuilder, TransactionView},
+    core::{Capacity, DepType, ScriptHashType, TransactionBuilder},
     h256, packed,
     prelude::*,
     H256,
@@ -38,8 +40,10 @@ pub struct RpcService<S> {
     listen_address: String,
     private_keys_store_path: String,
     consensus: Consensus,
+    /*
     pending_txs_map: Arc<RwLock<HashMap<packed::Byte32, TransactionView>>>,
     pending_txs: Arc<RwLock<Vec<packed::Byte32>>>,
+    */
 }
 
 impl<S: Store + Send + Sync + 'static> RpcService<S> {
@@ -56,8 +60,10 @@ impl<S: Store + Send + Sync + 'static> RpcService<S> {
             listen_address: listen_address.to_owned(),
             private_keys_store_path: private_keys_store_path.to_owned(),
             consensus: consensus.clone(),
+            /*
             pending_txs_map: Arc::new(RwLock::new(HashMap::default())),
             pending_txs: Arc::new(RwLock::new(Vec::default())),
+            */
         }
     }
 
@@ -69,8 +75,10 @@ impl<S: Store + Send + Sync + 'static> RpcService<S> {
             listen_address,
             private_keys_store_path,
             consensus,
+            /*
             pending_txs_map,
             pending_txs,
+            */
         } = self;
 
         let scripts = chain_store.get_scripts().unwrap();
@@ -229,10 +237,18 @@ impl<S: Store + Send + Sync + 'static> Rpc for RpcImpl<S> {
     }
 
     fn send_transaction(&self, transaction: Transaction) -> Result<H256> {
-        let tx: packed::Transaction = transaction.into();
-        let tx_hash = tx.calc_tx_hash();
-        self.send_control_message(ControlMessage::SendTransaction(tx))
-            .map(|_| tx_hash.unpack())
+        let tx_view = packed::Transaction::from(transaction)
+            .as_advanced_builder()
+            .build();
+        let tx_hash = tx_view.hash();
+        let resolved_tx = build_resolved_tx(self.chain_store.data_loader.clone(), tx_view.clone());
+        let cycles = verify_and_get_cycles(&resolved_tx, &self.chain_store.data_loader.clone());
+        match cycles {
+            Ok(_cycles) => self
+                .send_control_message(ControlMessage::SendTx((tx_view, _cycles)))
+                .map(|_| tx_hash.unpack()),
+            Err(_) => Ok(tx_hash.unpack()),
+        }
     }
 
     fn generate_account(&self) -> Result<()> {
@@ -476,12 +492,6 @@ impl<S: Store + Send + Sync + 'static> Rpc for RpcImpl<S> {
                             .set_outputs(vec![to_address_output.clone(), change_address_output]);
                         let unsigned_tx = unsigned_tx_builder.clone().build();
                         let tx_hash = unsigned_tx.hash();
-                        //build_resolved_tx
-                        let resolved_tx = build_resolved_tx(
-                            self.chain_store.data_loader.clone(),
-                            unsigned_tx.clone(),
-                        );
-                        //
 
                         let witness_len = witness_placeholder.as_slice().len() as u64;
                         let message = {
@@ -502,14 +512,28 @@ impl<S: Store + Send + Sync + 'static> Rpc for RpcImpl<S> {
                                 .lock(Some(Bytes::from(signature.serialize())).pack())
                                 .build();
 
-                            let signed_tx = unsigned_tx_builder
+                            let tx_view = unsigned_tx_builder
                                 .set_witnesses(vec![witness.as_bytes().pack()])
-                                .build()
-                                .data();
+                                .build();
+                            //build_resolved_tx
+                            let resolved_tx = build_resolved_tx(
+                                self.chain_store.data_loader.clone(),
+                                tx_view.clone(),
+                            );
+                            //calculate cycles
+                            let cycles = verify_and_get_cycles(
+                                &resolved_tx,
+                                &self.chain_store.data_loader.clone(),
+                            );
 
-                            return self
-                                .send_control_message(ControlMessage::SendTransaction(signed_tx))
-                                .map(|_| tx_hash.unpack());
+                            return match cycles {
+                                Ok(_cycles) => self
+                                    .send_control_message(ControlMessage::SendTx((
+                                        tx_view, _cycles,
+                                    )))
+                                    .map(|_| tx_hash.unpack()),
+                                Err(_) => Ok(tx_hash.unpack()),
+                            };
                         }
                     }
                 }
