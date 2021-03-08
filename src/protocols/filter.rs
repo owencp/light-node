@@ -16,7 +16,7 @@ const BAD_MESSAGE_BAN_TIME: Duration = Duration::from_secs(5 * 60);
 const GCS_FILTER_MSG_TOKEN: u64 = 0;
 //const SEND_GET_GCS_FILTER_HASHES_TOKEN: u64 = 1;
 const SEND_GET_GCS_CHECKPOINT_TOKEN: u64 = 2;
-const CONTROL_RECEIVER_TOKEN: u64 = 1;
+//const CONTROL_RECEIVER_TOKEN: u64 = 1;
 
 const MAX_FILTER_RANGE_SIZE: usize = 200;
 const MIN_CHECK_POINT_INTERVAL: u32 = 200_000;
@@ -177,8 +177,10 @@ impl<S: Store + Send + Sync> CKBProtocolHandler for FilterProtocol<S> {
     fn init(&mut self, nc: Arc<dyn CKBProtocolContext + Sync>) {
         nc.set_notify(Duration::from_millis(200), GCS_FILTER_MSG_TOKEN)
             .expect("set_notify should be ok");
+        /*
         nc.set_notify(Duration::from_secs(1), CONTROL_RECEIVER_TOKEN)
             .expect("set_notify should be ok");
+        */
         nc.set_notify(Duration::from_secs(1), SEND_GET_GCS_CHECKPOINT_TOKEN)
             .expect("set_notify should be ok");
     }
