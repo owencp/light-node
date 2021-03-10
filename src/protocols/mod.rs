@@ -37,6 +37,8 @@ pub struct GcsDataLoader {
     pub headers: Arc<RwLock<HashMap<Byte32, HeaderView>>>,
     //key:OutPoint; value:(CellOutput, output_data)
     pub cells: Arc<RwLock<HashMap<OutPoint, (CellOutput, Bytes)>>>,
+
+    pub cell_deps: Arc<RwLock<HashMap<OutPoint, (CellOutput, Bytes)>>>,
 }
 
 impl GcsDataLoader {
@@ -53,6 +55,13 @@ impl GcsDataLoader {
 
     pub fn delete_cell(&self, out_point: &OutPoint) {
         self.cells.write().unwrap().remove(out_point);
+    }
+
+    pub fn insert_dep_cell(&self, out_point: &OutPoint, output: &CellOutput, output_data: &Bytes) {
+        self.cell_deps
+            .write()
+            .unwrap()
+            .insert(out_point.clone(), (output.clone(), output_data.clone()));
     }
 }
 
@@ -101,7 +110,7 @@ pub fn build_resolved_tx(data_loader: GcsDataLoader, tx: TransactionView) -> Res
         .map(|dep| {
             let deps_out_point = dep.clone();
             let (dep_output, dep_data) = data_loader
-                .cells
+                .cell_deps
                 .read()
                 .unwrap()
                 .get(&deps_out_point.out_point())

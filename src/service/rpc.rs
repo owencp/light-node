@@ -3,7 +3,9 @@ use crate::protocols::{
 };
 use crate::store::Store;
 use bech32::{convert_bits, Bech32, ToBase32};
-use ckb_chain_spec::consensus::Consensus;
+use ckb_chain_spec::{
+    consensus::Consensus, OUTPUT_INDEX_SECP256K1_BLAKE160_SIGHASH_ALL, OUTPUT_INDEX_SECP256K1_DATA,
+};
 use ckb_crypto::secp::Privkey;
 use ckb_hash::{blake2b_256, new_blake2b};
 use ckb_jsonrpc_types::{
@@ -114,6 +116,24 @@ impl<S: Store + Send + Sync + 'static> RpcService<S> {
         }
         //load cells
         chain_store.load_all_active_cells();
+        //load cell_deps
+        let dep_out_point1 = packed::OutPoint::new(
+            consensus.genesis_block().transactions()[0].hash(),
+            OUTPUT_INDEX_SECP256K1_BLAKE160_SIGHASH_ALL as u32,
+        );
+        let (out_put1, data1) = secp256k1_blake160_sighash_cell(consensus.clone());
+        chain_store
+            .data_loader
+            .insert_dep_cell(&dep_out_point1, &out_put1, &data1);
+
+        let dep_out_point2 = packed::OutPoint::new(
+            consensus.genesis_block().transactions()[0].hash(),
+            OUTPUT_INDEX_SECP256K1_DATA as u32,
+        );
+        let (out_put2, data2) = secp256k1_data_cell(consensus.clone());
+        chain_store
+            .data_loader
+            .insert_dep_cell(&dep_out_point2, &out_put2, &data2);
 
         let rpc_impl = RpcImpl {
             chain_store,
@@ -574,4 +594,24 @@ fn address_to_script(address: &str) -> std::result::Result<packed::Script, Strin
                 .build())
         }
     }
+}
+
+pub fn secp256k1_blake160_sighash_cell(consensus: Consensus) -> (packed::CellOutput, Bytes) {
+    let genesis_block = consensus.genesis_block();
+    let tx = genesis_block.transactions()[0].clone();
+    let (cell_output, data) = tx
+        .output_with_data(OUTPUT_INDEX_SECP256K1_BLAKE160_SIGHASH_ALL as usize)
+        .unwrap();
+
+    (cell_output, data)
+}
+
+pub fn secp256k1_data_cell(consensus: Consensus) -> (packed::CellOutput, Bytes) {
+    let genesis_block = consensus.genesis_block();
+    let tx = genesis_block.transactions()[0].clone();
+    let (cell_output, data) = tx
+        .output_with_data(OUTPUT_INDEX_SECP256K1_DATA as usize)
+        .unwrap();
+
+    (cell_output, data)
 }

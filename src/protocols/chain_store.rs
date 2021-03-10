@@ -729,7 +729,7 @@ impl<S: Store> ChainStore<S> {
     }
 
     //load all active cells
-    pub fn load_all_active_cells(&self) {
+    pub fn load_all_active_cells(&self) -> Result<(), Error> {
         self.store
             .iter(&[KeyPrefix::OutPoint as u8], IteratorDirection::Forward)
             .map(|iter| {
@@ -751,7 +751,7 @@ impl<S: Store> ChainStore<S> {
                         Some((out_point, output, output_data))
                     })
                     .for_each(move |x| self.data_loader.insert_cell(&x.0, &x.1, &x.2.unpack()));
-            });
+            })
     }
 }
 
