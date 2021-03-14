@@ -1,7 +1,11 @@
-use crate::protocols::{ChainStore, ControlMessage};
+use crate::protocols::{
+    build_resolved_tx, relay::ControlMessage, verify_and_get_cycles, ChainStore, GcsDataLoader,
+};
 use crate::store::Store;
 use bech32::{convert_bits, Bech32, ToBase32};
-use ckb_chain_spec::consensus::Consensus;
+use ckb_chain_spec::{
+    consensus::Consensus, OUTPUT_INDEX_SECP256K1_BLAKE160_SIGHASH_ALL, OUTPUT_INDEX_SECP256K1_DATA,
+};
 use ckb_crypto::secp::Privkey;
 use ckb_hash::{blake2b_256, new_blake2b};
 use ckb_jsonrpc_types::{
@@ -38,6 +42,10 @@ pub struct RpcService<S> {
     listen_address: String,
     private_keys_store_path: String,
     consensus: Consensus,
+    /*
+    pending_txs_map: Arc<RwLock<HashMap<packed::Byte32, TransactionView>>>,
+    pending_txs: Arc<RwLock<Vec<packed::Byte32>>>,
+    */
 }
 
 impl<S: Store + Send + Sync + 'static> RpcService<S> {
@@ -54,6 +62,10 @@ impl<S: Store + Send + Sync + 'static> RpcService<S> {
             listen_address: listen_address.to_owned(),
             private_keys_store_path: private_keys_store_path.to_owned(),
             consensus: consensus.clone(),
+            /*
+            pending_txs_map: Arc::new(RwLock::new(HashMap::default())),
+            pending_txs: Arc::new(RwLock::new(Vec::default())),
+            */
         }
     }
 
@@ -65,6 +77,10 @@ impl<S: Store + Send + Sync + 'static> RpcService<S> {
             listen_address,
             private_keys_store_path,
             consensus,
+            /*
+            pending_txs_map,
+            pending_txs,
+            */
         } = self;
 
         let scripts = chain_store.get_scripts().unwrap();
@@ -98,6 +114,9 @@ impl<S: Store + Send + Sync + 'static> RpcService<S> {
                 private_keys.insert(script, private_key);
             }
         }
+        //load cells
+        chain_store.load_all_active_cells();
+        load_dep_cells(consensus.clone(), chain_store.data_loader.clone());
         let rpc_impl = RpcImpl {
             chain_store,
             sender,
@@ -220,10 +239,18 @@ impl<S: Store + Send + Sync + 'static> Rpc for RpcImpl<S> {
     }
 
     fn send_transaction(&self, transaction: Transaction) -> Result<H256> {
-        let tx: packed::Transaction = transaction.into();
-        let tx_hash = tx.calc_tx_hash();
-        self.send_control_message(ControlMessage::SendTransaction(tx))
-            .map(|_| tx_hash.unpack())
+        let tx_view = packed::Transaction::from(transaction)
+            .as_advanced_builder()
+            .build();
+        let tx_hash = tx_view.hash();
+        let resolved_tx = build_resolved_tx(self.chain_store.data_loader.clone(), tx_view.clone());
+        let cycles = verify_and_get_cycles(&resolved_tx, &self.chain_store.data_loader.clone());
+        match cycles {
+            Ok(_cycles) => self
+                .send_control_message(ControlMessage::SendTx((tx_view, _cycles)))
+                .map(|_| tx_hash.unpack()),
+            Err(_) => Ok(tx_hash.unpack()),
+        }
     }
 
     fn generate_account(&self) -> Result<()> {
@@ -479,21 +506,6 @@ impl<S: Store + Send + Sync + 'static> Rpc for RpcImpl<S> {
                             H256::from(buf)
                         };
 
-                        // this demo use a dirty and insecure fn to find the corresponding private key and sign the message
-                        /*
-                        let private_key = self
-                            .private_keys
-                            .read()
-                            .unwrap()
-                            .iter()
-                            .find(|private_key| {
-                                blake2b_256(private_key.pubkey().unwrap().serialize())[..20]
-                                    .to_vec()
-                                    == from_script.args().raw_data()
-                            })
-                            .cloned()
-                            .unwrap();
-                        */
                         if let Some(private_key) =
                             self.private_keys.read().unwrap().get(from_script)
                         {
@@ -502,14 +514,28 @@ impl<S: Store + Send + Sync + 'static> Rpc for RpcImpl<S> {
                                 .lock(Some(Bytes::from(signature.serialize())).pack())
                                 .build();
 
-                            let signed_tx = unsigned_tx_builder
+                            let tx_view = unsigned_tx_builder
                                 .set_witnesses(vec![witness.as_bytes().pack()])
-                                .build()
-                                .data();
+                                .build();
+                            //build_resolved_tx
+                            let resolved_tx = build_resolved_tx(
+                                self.chain_store.data_loader.clone(),
+                                tx_view.clone(),
+                            );
+                            //calculate cycles
+                            let cycles = verify_and_get_cycles(
+                                &resolved_tx,
+                                &self.chain_store.data_loader.clone(),
+                            );
 
-                            return self
-                                .send_control_message(ControlMessage::SendTransaction(signed_tx))
-                                .map(|_| tx_hash.unpack());
+                            return match cycles {
+                                Ok(_cycles) => self
+                                    .send_control_message(ControlMessage::SendTx((
+                                        tx_view, _cycles,
+                                    )))
+                                    .map(|_| tx_hash.unpack()),
+                                Err(_) => Ok(tx_hash.unpack()),
+                            };
                         }
                     }
                 }
@@ -550,4 +576,57 @@ fn address_to_script(address: &str) -> std::result::Result<packed::Script, Strin
                 .build())
         }
     }
+}
+
+pub fn secp256k1_blake160_sighash_cell(consensus: Consensus) -> (packed::CellOutput, Bytes) {
+    let genesis_block = consensus.genesis_block();
+    let tx = genesis_block.transactions()[0].clone();
+    let (cell_output, data) = tx
+        .output_with_data(OUTPUT_INDEX_SECP256K1_BLAKE160_SIGHASH_ALL as usize)
+        .unwrap();
+    (cell_output, data)
+}
+
+pub fn secp256k1_data_cell(consensus: Consensus) -> (packed::CellOutput, Bytes) {
+    let genesis_block = consensus.genesis_block();
+    let tx = genesis_block.transactions()[0].clone();
+    let (cell_output, data) = tx
+        .output_with_data(OUTPUT_INDEX_SECP256K1_DATA as usize)
+        .unwrap();
+    (cell_output, data)
+}
+
+pub fn secp_dep_cell(consensus: Consensus) -> (packed::CellOutput, Bytes) {
+    let genesis_block = consensus.genesis_block();
+    let tx = genesis_block.transactions()[1].clone();
+    let (cell_output, data) = tx
+        .output_with_data(0)
+        .unwrap();
+    (cell_output, data)
+}
+
+pub fn load_dep_cells(consensus: Consensus, data_loader: GcsDataLoader) {
+        let dep_out_point1 = packed::OutPoint::new(
+            consensus.genesis_block().transactions()[0].hash(),
+            OUTPUT_INDEX_SECP256K1_BLAKE160_SIGHASH_ALL as u32,
+        );
+        let (output1, data1) = secp256k1_blake160_sighash_cell(consensus.clone());
+        data_loader
+            .insert_dep_cell(&dep_out_point1, &output1, &data1);
+
+        let dep_out_point2 = packed::OutPoint::new(
+            consensus.genesis_block().transactions()[0].hash(),
+            OUTPUT_INDEX_SECP256K1_DATA as u32,
+        );
+        let (output2, data2) = secp256k1_data_cell(consensus.clone());
+        data_loader
+            .insert_dep_cell(&dep_out_point2, &output2, &data2);
+
+        let dep_out_point3 = packed::OutPoint::new(
+            consensus.genesis_block().transactions()[1].hash(),
+            0,
+        );
+        let (output3, data3) = secp_dep_cell(consensus.clone());
+        data_loader
+            .insert_dep_cell(&dep_out_point3, &output3, &data3);
 }
