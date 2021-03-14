@@ -1,11 +1,12 @@
 use crate::protocols::HeaderProvider;
 use crate::store::{Batch, Error, IteratorDirection, Store};
 use ckb_types::{
-    core::{BlockNumber, HeaderView, BlockView},
-    packed,
+    bytes::Bytes,
+    core::{BlockNumber, BlockView, HeaderView, ScriptHashType},
+    h256, packed,
     prelude::*,
     utilities::compact_to_difficulty,
-    U256,
+    H256, U256,
 };
 use std::convert::TryInto;
 use std::sync::Arc;
@@ -50,9 +51,12 @@ pub enum Value {
         BlockNumber,    // Consumed by which block number
     ),
     FilteredBlock(Vec<(packed::Byte32, IOIndex, IOType)>),
-    Script(BlockNumber),
+    Script(
+        packed::Script, //anyone_can_py
+        BlockNumber,
+    ),
     GcsFilter(
-        packed::Bytes,  // filter
+        packed::Bytes, // filter
     ),
     GcsRecord(packed::Byte32),
 }
@@ -145,12 +149,11 @@ impl Into<Vec<u8>> for Value {
                     }
                 }
             }
-            Value::Script(block_number) => {
+            Value::Script(anyone_can_pay_script, block_number) => {
+                encoded.extend_from_slice(anyone_can_pay_script.as_slice());
                 encoded.extend_from_slice(&block_number.to_be_bytes());
             }
-            Value::GcsFilter(
-                filter
-            ) => {
+            Value::GcsFilter(filter) => {
                 encoded.extend_from_slice(filter.as_slice());
             }
             Value::GcsRecord(block_hash) => {
@@ -242,12 +245,12 @@ impl<S: Store> ChainStore<S> {
             Value::GcsFilter(packed::Bytes::default()),
         )?;
         //insert init record
-        batch.put_kv(Key::GcsRecord(0),Value::GcsRecord(genesis.hash()))?;
+        batch.put_kv(Key::GcsRecord(0), Value::GcsRecord(genesis.hash()))?;
         batch.commit()
     }
 
     //Gcs filter
-    pub fn insert_gcsfilter(&self, filter: packed::GcsFilter)->Result<(), Error> {
+    pub fn insert_gcsfilter(&self, filter: packed::GcsFilter) -> Result<(), Error> {
         let mut batch = self.store.batch()?;
         batch.put_kv(
             Key::GcsFilter(filter.block_hash()),
@@ -255,17 +258,22 @@ impl<S: Store> ChainStore<S> {
         )?;
         batch.commit()
     }
-    
+
     //get filter by block_hash
-    pub fn get_gcsfilter(&self, block_hash: packed::Byte32) -> Result<Option<packed::Bytes>, Error> {
+    pub fn get_gcsfilter(
+        &self,
+        block_hash: packed::Byte32,
+    ) -> Result<Option<packed::Bytes>, Error> {
         self.store
             .get(&Key::GcsFilter(block_hash).into_vec())
             .map(|value| {
-                value.map(|filter| packed::BytesReader::from_slice_should_be_ok(&filter[..]).to_entity())
+                value.map(|filter| {
+                    packed::BytesReader::from_slice_should_be_ok(&filter[..]).to_entity()
+                })
             })
     }
-    
-    pub fn get_lastest_hash(&self)->Result<Option<packed::Byte32>, Error>{
+
+    pub fn get_lastest_hash(&self) -> Result<Option<packed::Byte32>, Error> {
         let mut iter = self
             .store
             .iter(
@@ -282,34 +290,32 @@ impl<S: Store> ChainStore<S> {
             Ok(None)
         }
     }
-    
-    pub fn insert_record(&mut self, block_num:BlockNumber, hash:packed::Byte32)->Result<(), Error> {
+
+    pub fn insert_record(
+        &mut self,
+        block_num: BlockNumber,
+        hash: packed::Byte32,
+    ) -> Result<(), Error> {
         let mut batch = self.store.batch()?;
-        batch.put_kv(
-            Key::GcsRecord(block_num),
-            Value::GcsRecord(hash),
-        )?;
+        batch.put_kv(Key::GcsRecord(block_num), Value::GcsRecord(hash))?;
         batch.commit()
     }
-    
+
     //get the lastest filter block number
-    pub fn get_lastest_block_num(&self)->Result<Option<BlockNumber>, Error>{
+    pub fn get_lastest_block_num(&self) -> Result<Option<BlockNumber>, Error> {
         let mut iter = self
             .store
-            .iter(
-                &[KeyPrefix::Script as u8 + 1],
-                IteratorDirection::Reverse,
-            )?
+            .iter(&[KeyPrefix::Script as u8 + 1], IteratorDirection::Reverse)?
             .take_while(|(key, _value)| key.starts_with(&[KeyPrefix::Script as u8]));
 
         if let Some(block_number) = iter.next().map(|(_key, value)| {
-            packed::Uint64Reader::from_slice_should_be_ok(&value[..]).unpack()
+            packed::Uint64Reader::from_slice_should_be_ok(&value[&value.len() - 8..]).unpack()
         }) {
             Ok(Some(block_number))
         } else {
             Ok(Some(0 as BlockNumber))
         }
-    } 
+    }
     pub fn insert_header(&self, header: HeaderView) -> Result<(), Error> {
         let mut batch = self.store.batch()?;
         let parent_total_difficulty = self
@@ -385,23 +391,27 @@ impl<S: Store> ChainStore<S> {
         Ok(locator)
     }
 
-    pub fn insert_filtered_block(
-        &self,
-        block: BlockView
-    ) -> Result<(), Error> {
+    pub fn insert_filtered_block(&self, block: BlockView) -> Result<(), Error> {
         let scripts = self
             .get_scripts()?
             .into_iter()
-            .map(|(script, _block_number)| script)
+            .map(|(script, anyone_can_pay_script, _block_number)| (script, anyone_can_pay_script))
             .collect::<Vec<_>>();
         let mut batch = self.store.batch()?;
         let mut matched = Vec::new();
-        for (_,tx) in block.transactions().into_iter().enumerate() {
+        for (_, tx) in block.transactions().into_iter().enumerate() {
             for (index, input) in tx.inputs().into_iter().enumerate() {
                 if let Some((output, output_data, block_number)) =
                     self.get_out_point(input.previous_output())?
                 {
-                    if scripts.iter().any(|script| script == &output.lock()) {
+                    if scripts.iter().any(|(script, anyone_can_pay_script)| {
+                        script == &output.lock()
+                            || (if let Some(type_script) = &output.type_().to_opt() {
+                                anyone_can_pay_script == type_script
+                            } else {
+                                false
+                            })
+                    }) {
                         let tx_hash = input.previous_output().tx_hash();
                         matched.push((tx_hash.clone(), index as u32, IOType::Input));
                         batch.put_kv(
@@ -419,7 +429,14 @@ impl<S: Store> ChainStore<S> {
                 }
             }
             for (index, output) in tx.outputs().into_iter().enumerate() {
-                if scripts.iter().any(|script| script == &output.lock()) {
+                if scripts.iter().any(|(script, anyone_can_pay_script)| {
+                    script == &output.lock()
+                        || (if let Some(type_script) = &output.type_().to_opt() {
+                            anyone_can_pay_script == type_script
+                        } else {
+                            false
+                        })
+                }) {
                     let tx_hash = tx.hash();
                     matched.push((tx_hash.clone(), index as u32, IOType::Output));
                     batch.put_kv(
@@ -494,87 +511,34 @@ impl<S: Store> ChainStore<S> {
                 })
             })
     }
-    /*
-    fn rollback_filtered_block(
-        &self,
-        block_number: BlockNumber,
-        block_hash: packed::Byte32,
-    ) -> Result<(), Error> {
-        let mut batch = self.store.batch()?;
-        if let Some(matched) = self
-            .store
-            .get(&Key::FilteredBlock(block_number, block_hash.clone()).into_vec())
-            .map(|value| {
-                value.map(|raw| {
-                    raw.chunks_exact(37)
-                        .map(|s| {
-                            (
-                                packed::Byte32::from_slice(&s[0..32])
-                                    .expect("stored FilteredBlock value: tx_hash"),
-                                IOIndex::from_be_bytes(
-                                    s[32..36]
-                                        .try_into()
-                                        .expect("stored FilteredBlock value: index"),
-                                ),
-                                if s[36] == 0 {
-                                    IOType::Input
-                                } else {
-                                    IOType::Output
-                                },
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                })
-            })?
-        {
-            for (tx_hash, io_index, io_type) in matched.into_iter().rev() {
-                let out_point = packed::OutPoint::new(tx_hash, io_index);
-                match io_type {
-                    IOType::Input => {
-                        if let Some((output, output_data, created_by_block_number)) =
-                            self.get_consumed_out_point(out_point.clone())?
-                        {
-                            batch.delete(Key::ConsumedOutPoint(out_point.clone()).into_vec())?;
-                            batch.put_kv(
-                                Key::OutPoint(out_point),
-                                Value::OutPoint(output, output_data, created_by_block_number),
-                            )?;
-                        }
-                    }
-                    IOType::Output => {
-                        batch.delete(Key::OutPoint(out_point).into_vec())?;
-                    }
-                }
-            }
-            batch.delete(Key::FilteredBlock(block_number, block_hash).into_vec())?;
-        }
 
-        batch.commit()
-    }
-    */
-    
     pub fn insert_script(
         &self,
         script: packed::Script,
+        anyone_can_pay_script: packed::Script,
     ) -> Result<(), Error> {
-        let mut block_number:BlockNumber = 0;
+        let mut block_number: BlockNumber = 0;
         //get current block num from other script
         let scripts = self
             .get_scripts()
             .expect("store script")
             .into_iter()
-            .map(|(_script, block_number)| block_number)
+            .map(|(_, _, block_number)| block_number)
             .collect::<Vec<_>>();
         if scripts.len() != 0 {
             block_number = scripts[0];
-        }else{
+        } else {
             block_number = self.tip()?.expect("stored tip").number();
         }
         let mut batch = self.store.batch()?;
-        batch.put_kv(Key::Script(script), Value::Script(block_number))?;
+        batch.put_kv(
+            Key::Script(script),
+            Value::Script(anyone_can_pay_script, block_number),
+        )?;
         batch.commit()
     }
-    pub fn get_scripts(&self) -> Result<Vec<(packed::Script, BlockNumber)>, Error> {
+
+    pub fn get_scripts(&self) -> Result<Vec<(packed::Script, packed::Script, BlockNumber)>, Error> {
         self.store
             .iter(&[KeyPrefix::Script as u8], IteratorDirection::Forward)
             .map(|iter| {
@@ -582,8 +546,12 @@ impl<S: Store> ChainStore<S> {
                     .map(|(key, value)| {
                         (
                             packed::ScriptReader::from_slice_should_be_ok(&key[1..]).to_entity(),
+                            packed::ScriptReader::from_slice_should_be_ok(
+                                &value[..value.len() - 8],
+                            )
+                            .to_entity(),
                             BlockNumber::from_be_bytes(
-                                value[0..8]
+                                value[value.len() - 8..]
                                     .try_into()
                                     .expect("stored Script value: block_number"),
                             ),
@@ -592,16 +560,29 @@ impl<S: Store> ChainStore<S> {
                     .collect::<Vec<_>>()
             })
     }
-    
+
+    pub fn get_anyone_can_pay_script(
+        &self,
+        script: packed::Script,
+    ) -> Result<Option<packed::Script>, Error> {
+        self.store
+            .get(&Key::Script(script).into_vec())
+            .map(|value| {
+                value.map(|raw| {
+                    packed::ScriptReader::from_slice_should_be_ok(&raw[..raw.len() - 8]).to_entity()
+                })
+            })
+    }
+
     pub fn update_scripts(&mut self, last_number: BlockNumber) -> Result<(), Error> {
         let mut batch = self.store.batch()?;
         let scripts = self
             .get_scripts()?
             .into_iter()
-            .map(|(script, _block_number)| script)
+            .map(|(script, anyone_can_pay_script, _block_number)| (script, anyone_can_pay_script))
             .collect::<Vec<_>>();
-        for script in scripts {
-            batch.put_kv(Key::Script(script), Value::Script(last_number))?;
+        for (script, anyone) in scripts {
+            batch.put_kv(Key::Script(script), Value::Script(anyone, last_number))?;
         }
         batch.commit()
     }
@@ -630,7 +611,20 @@ impl<S: Store> ChainStore<S> {
                         ) as usize;
                         let output = packed::CellOutput::from_slice(&value[..output_size])
                             .expect("stored OutPoint value: output");
-                        if script.eq(&output.lock()) {
+                        if script.eq(&output.lock())
+                            || (if let Some(type_script) = &output.type_().to_opt() {
+                                if let Some(anyone_can_pay_script) = self
+                                    .get_anyone_can_pay_script(script.clone())
+                                    .expect("script soter")
+                                {
+                                    anyone_can_pay_script.eq(type_script)
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            })
+                        {
                             let out_point = packed::OutPoint::from_slice(&key[1..])
                                 .expect("stored OutPoint key");
                             let output_data =
@@ -681,7 +675,20 @@ impl<S: Store> ChainStore<S> {
                     ) as usize;
                     let output = packed::CellOutput::from_slice(&value[..output_size])
                         .expect("stored ConsumedOutPoint value: output");
-                    if script.eq(&output.lock()) {
+                    if script.eq(&output.lock())
+                        || (if let Some(type_script) = &output.type_().to_opt() {
+                            if let Some(anyone_can_pay_script) = self
+                                .get_anyone_can_pay_script(script.clone())
+                                .expect("script soter")
+                            {
+                                anyone_can_pay_script.eq(type_script)
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        })
+                    {
                         let out_point = packed::OutPoint::from_slice(&key[1..])
                             .expect("stored ConsumedOutPoint key");
                         let output_data =
