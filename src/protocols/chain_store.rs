@@ -1,3 +1,4 @@
+use super::GcsDataLoader;
 use crate::protocols::HeaderProvider;
 use crate::store::{Batch, Error, IteratorDirection, Store};
 use ckb_types::{
@@ -167,6 +168,7 @@ impl Into<Vec<u8>> for Value {
 #[derive(Clone)]
 pub struct ChainStore<S> {
     pub store: Arc<S>,
+    pub data_loader: GcsDataLoader,
 }
 
 impl<S: Store> ChainStore<S> {
@@ -391,7 +393,7 @@ impl<S: Store> ChainStore<S> {
         Ok(locator)
     }
 
-    pub fn insert_filtered_block(&self, block: BlockView) -> Result<(), Error> {
+    pub fn insert_filtered_block(&mut self, block: BlockView) -> Result<(), Error> {
         let scripts = self
             .get_scripts()?
             .into_iter()
@@ -425,6 +427,8 @@ impl<S: Store> ChainStore<S> {
                             ),
                         )?;
                         batch.delete(Key::OutPoint(input.previous_output()).into_vec())?;
+                        //update data_loader
+                        self.data_loader.delete_cell(&input.previous_output());
                     }
                 }
             }
@@ -438,15 +442,16 @@ impl<S: Store> ChainStore<S> {
                         })
                 }) {
                     let tx_hash = tx.hash();
+                    let out_point = packed::OutPoint::new(tx_hash.clone(), index as u32);
+                    let output_data = tx.outputs_data().get(index).expect("checked len");
                     matched.push((tx_hash.clone(), index as u32, IOType::Output));
                     batch.put_kv(
-                        Key::OutPoint(packed::OutPoint::new(tx_hash, index as u32)),
-                        Value::OutPoint(
-                            output,
-                            tx.outputs_data().get(index).expect("checked len"),
-                            block.number(),
-                        ),
+                        Key::OutPoint(out_point.clone()),
+                        Value::OutPoint(output.clone(), output_data.clone(), block.number()),
                     )?;
+                    //insert data_loader
+                    self.data_loader
+                        .insert_cell(&out_point, &output, &output_data.unpack());
                 }
             }
         }
@@ -720,6 +725,32 @@ impl<S: Store> ChainStore<S> {
                     }
                 })
                 .collect::<Vec<_>>()
+            })
+    }
+
+    //load all active cells
+    pub fn load_all_active_cells(&self) -> Result<(), Error> {
+        self.store
+            .iter(&[KeyPrefix::OutPoint as u8], IteratorDirection::Forward)
+            .map(|iter| {
+                iter.take_while(|(key, _value)| key.starts_with(&[KeyPrefix::OutPoint as u8]))
+                    .filter_map(|(key, value)| {
+                        let output_size = u32::from_le_bytes(
+                            value[..4]
+                                .try_into()
+                                .expect("stored OutPoint value: output_size"),
+                        ) as usize;
+                        let output = packed::CellOutput::from_slice(&value[..output_size])
+                            .expect("stored OutPoint value: output");
+
+                        let out_point =
+                            packed::OutPoint::from_slice(&key[1..]).expect("stored OutPoint key");
+                        let output_data =
+                            packed::Bytes::from_slice(&value[output_size..value.len() - 8])
+                                .expect("stored OutPoint value: output_data");
+                        Some((out_point, output, output_data))
+                    })
+                    .for_each(move |x| self.data_loader.insert_cell(&x.0, &x.1, &x.2.unpack()));
             })
     }
 }

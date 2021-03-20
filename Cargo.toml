@@ -35,6 +35,11 @@ ckb-crypto = { git = "https://github.com/owencp/ckb", branch = "quake/gcs-filter
 ckb-hash = { git = "https://github.com/owencp/ckb", branch = "quake/gcs-filter" }
 ckb-util = { git = "https://github.com/owencp/ckb", branch = "quake/gcs-filter" }
 ckb-async-runtime = { git = "https://github.com/owencp/ckb", branch = "quake/gcs-filter" }
-
+ckb-test = { git = "https://github.com/owencp/ckb", branch = "quake/gcs-filter" }
+ckb-sync = { git = "https://github.com/owencp/ckb", branch = "quake/gcs-filter" }
+ckb-test-chain-utils = { git = "https://github.com/owencp/ckb", branch = "quake/gcs-filter" }
+ckb-script = { git = "https://github.com/owencp/ckb", branch = "quake/gcs-filter" }
+ckb-traits = { git = "https://github.com/owencp/ckb", branch = "quake/gcs-filter" }
+ckb-error = { git = "https://github.com/owencp/ckb", branch = "quake/gcs-filter" }
 [dev-dependencies]
 tempfile = "3.0"

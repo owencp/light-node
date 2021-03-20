@@ -2,15 +2,18 @@ use ckb_app_config::NetworkConfig;
 pub mod protocols;
 pub mod service;
 pub mod store;
-use crate::store::{SledStore, Store};
-use crate::protocols::{ChainStore, FilterProtocol, SyncProtocol,Peers};
+use crate::protocols::{
+    ChainStore, FilterProtocol, GcsDataLoader, Peers, RelayProtocol, SyncProtocol,
+};
 use crate::service::RpcService;
+use crate::store::{SledStore, Store};
+use ckb_async_runtime::new_global_runtime;
 use ckb_logger::info;
 use ckb_logger_config::Config as LogConfig;
 use ckb_network::{
-    BlockingFlag, CKBProtocol, DefaultExitHandler, ExitHandler, NetworkService, NetworkState, SupportProtocols,
+    BlockingFlag, CKBProtocol, DefaultExitHandler, ExitHandler, NetworkService, NetworkState,
+    SupportProtocols,
 };
-use ckb_async_runtime::new_global_runtime;
 use clap::{App, Arg};
 use crossbeam_channel::unbounded;
 use serde::{Deserialize, Serialize};
@@ -88,7 +91,11 @@ fn init(
 ) {
     let sleddb = Arc::new(SledStore::new(config.path.to_str().unwrap()));
     info!("store statistics: {:?}", sleddb.statistics().unwrap());
-    let store = ChainStore { store: sleddb };
+    let data_loader = GcsDataLoader::new();
+    let store = ChainStore {
+        store: sleddb,
+        data_loader,
+    };
 
     let resource = ckb_resource::Resource::bundled(format!("specs/{}.toml", chain));
     let spec = ckb_chain_spec::ChainSpec::load_from(&resource).expect("load spec by name");
@@ -99,8 +106,8 @@ fn init(
     let consensus = spec.build_consensus().expect("build consensus");
 
     let (sender, receiver) = unbounded();
-    
-    let  peers = Peers::new();
+
+    let peers = Peers::new();
 
     let _server = RpcService::new(
         store.clone(),
@@ -124,23 +131,43 @@ fn init(
     let required_protocol_ids = vec![
         SupportProtocols::Sync.protocol_id(),
         SupportProtocols::GcsFilter.protocol_id(),
+        SupportProtocols::Relay.protocol_id(),
     ];
     let mut blocking_recv_flag = BlockingFlag::default();
     blocking_recv_flag.disable_connected();
     blocking_recv_flag.disable_disconnected();
     blocking_recv_flag.disable_notify();
-    let sync_protocol = Box::new(SyncProtocol::new(store.clone(), consensus.clone(), peers.clone()));
-    let filter_protocol = Box::new(FilterProtocol::new(store, consensus.clone(), receiver, peers.clone()));
+    let sync_protocol = Box::new(SyncProtocol::new(
+        store.clone(),
+        consensus.clone(),
+        peers.clone(),
+    ));
+    let filter_protocol = Box::new(FilterProtocol::new(
+        store,
+        consensus.clone(),
+        //receiver,
+        peers.clone(),
+    ));
+    let relay_protocol = Box::new(RelayProtocol::new(
+        //store,
+        consensus.clone(),
+        receiver,
+        peers.clone(),
+    ));
     let protocols = vec![
         CKBProtocol::new_with_support_protocol(
             SupportProtocols::Sync,
             sync_protocol,
             Arc::clone(&network_state),
         ),
-
         CKBProtocol::new_with_support_protocol(
             SupportProtocols::GcsFilter,
             filter_protocol,
+            Arc::clone(&network_state),
+        ),
+        CKBProtocol::new_with_support_protocol(
+            SupportProtocols::Relay,
+            relay_protocol,
             Arc::clone(&network_state),
         ),
     ];
